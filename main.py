@@ -49,18 +49,28 @@ ARABIC_MAPPING = {
 }
 
 
-class CameraStream:
+class SpherexAgent:
     def __init__(self):
         self.cap = None
         os.makedirs("frames", exist_ok=True)
 
-        # Initialize YOLO model
+        # Create a models directory to cache the downloaded model
+        os.makedirs("models", exist_ok=True)
+        model_path = "models/license_yolo_N_96.5_1024.pt"
+
         try:
-            model_dir = (
-                snapshot_download("omarelsayeed/licence_plates")
-                + "/license_yolo_N_96.5_1024.pt"
-            )
-            self.model = YOLO(model_dir)
+            if not os.path.exists(model_path):
+                print("Downloading model for the first time...")
+                model_dir = snapshot_download("omarelsayeed/licence_plates")
+                source_model = os.path.join(
+                    model_dir, "license_yolo_N_96.5_1024.pt"
+                )
+                import shutil
+
+                shutil.copy2(source_model, model_path)
+                print("Model downloaded successfully")
+
+            self.model = YOLO(model_path)
             print("\033[H\033[J")
         except Exception as e:
             print(f"❌ Error loading model: {str(e)}")
@@ -69,10 +79,12 @@ class CameraStream:
     def connect_to_stream(self):
         """Establish connection to RTSP stream"""
         try:
+            print(f"🔗 Connecting to Camera Stream: {CAMERA_URL}")
             self.cap = cv2.VideoCapture(CAMERA_URL, cv2.CAP_FFMPEG)
             self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
             if self.cap.isOpened():
+                print("✅ Connection successful")
                 return True
 
         except Exception as e:
@@ -204,13 +216,13 @@ class CameraStream:
                     self.connect_to_stream()
                     continue
 
+                self.cap.grab()
                 ret, frame = self.cap.read()
                 if not ret:
                     self.cap.release()
                     self.connect_to_stream()
                     continue
 
-                # Process frame
                 license_text, unmapped_text, is_authorized = (
                     self.process_frame(frame)
                 )
@@ -245,5 +257,5 @@ class CameraStream:
 
 
 if __name__ == "__main__":
-    stream = CameraStream()
-    stream.start_processing()
+    app = SpherexAgent()
+    app.start_processing()
