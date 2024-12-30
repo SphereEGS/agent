@@ -1,20 +1,20 @@
-import cv2
-import time
 import os
-import numpy as np
+import queue
 from datetime import datetime
-import requests
-from ultralytics import YOLO
-from huggingface_hub import snapshot_download
-from dotenv import load_dotenv
+from threading import Thread
+from time import sleep
 
-# Load environment variables
+import cv2
+import numpy as np
+import requests
+from dotenv import load_dotenv
+from huggingface_hub import snapshot_download
+from ultralytics import YOLO
+
 load_dotenv()
 ZONE = os.getenv("ZONE")
-BACKEND_URL = os.getenv("BACKEND_URL")
 CAMERA_URL = os.getenv("CAMERA_URL")
 
-# Arabic mapping for license plates
 ARABIC_MAPPING = {
     "baa": "\u0628",
     "Laam": "\u0644",
@@ -49,12 +49,56 @@ ARABIC_MAPPING = {
 }
 
 
+class CameraStream:
+    def __init__(self, src):
+        self.stream = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+        self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.stream.set(cv2.CAP_PROP_FPS, 30)
+        self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+
+        self.queue = queue.Queue(maxsize=2)
+        self.stopped = False
+
+    def start(self):
+        Thread(target=self.update, args=()).start()
+        return self
+
+    def update(self):
+        while True:
+            if self.stopped:
+                return
+
+            if self.queue.full():
+                try:
+                    self.queue.get_nowait()
+                except queue.Empty:
+                    pass
+
+            ret, frame = self.stream.read()
+            if not ret:
+                self.stopped = True
+                return
+
+            self.queue.put(frame)
+
+    def read(self):
+        return self.queue.get()
+
+    def stop(self):
+        self.stopped = True
+
+    def release(self):
+        self.stopped = True
+        self.stream.release()
+
+    def isOpened(self):
+        return self.stream.isOpened()
+
+
 class SpherexAgent:
     def __init__(self):
-        self.cap = None
+        self.camera = None
         os.makedirs("frames", exist_ok=True)
-
-        # Create a models directory to cache the downloaded model
         os.makedirs("models", exist_ok=True)
         model_path = "models/license_yolo_N_96.5_1024.pt"
 
@@ -80,69 +124,68 @@ class SpherexAgent:
         """Establish connection to RTSP stream"""
         try:
             print(f"🔗 Connecting to Camera Stream: {CAMERA_URL}")
-            self.cap = cv2.VideoCapture(CAMERA_URL, cv2.CAP_FFMPEG)
-            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            self.camera = CameraStream(CAMERA_URL)
+            self.camera.start()
 
-            if self.cap.isOpened():
+            if self.camera.isOpened():
                 print("✅ Connection successful")
                 return True
 
         except Exception as e:
             print(f"❌ Connection failed: {str(e)}")
-            if self.cap:
-                self.cap.release()
+            if self.camera:
+                self.camera.release()
 
         return False
-
-    def save_frame(self, frame, plate_text=None):
-        """Save frame with timestamp and optional plate text"""
-        timestamp = datetime.now().strftime("%m%d_%H%M%S")
-        frame_filename = f"frames/{timestamp}.jpg"
-        cv2.imwrite(frame_filename, frame)
 
     def process_frame(self, frame):
         """Process a single frame to detect and recognize license plate"""
         try:
             cropped_plate = self.detect_and_crop_plate(frame)
             if cropped_plate is None:
-                return None, None, False
+                return None, False
 
             results = self.model.predict(
                 cropped_plate, conf=0.25, iou=0.45, imgsz=1024, verbose=False
             )
             if not results:
-                return None, None, False
+                return None, False
 
-            detections = [
-                (float(box[0]), self.model.names[int(cls)])
-                for box, cls in zip(
-                    results[0].boxes.xyxy, results[0].boxes.cls
+            boxes_and_classes = [
+                (
+                    float(box[0]),
+                    float(box[2]),
+                    self.model.names[int(cls)],
+                    conf,
+                )
+                for box, cls, conf in zip(
+                    results[0].boxes.xyxy,
+                    results[0].boxes.cls,
+                    results[0].boxes.conf,
                 )
             ]
-            detections.sort()
 
-            unmapped_chars = [cls for _, cls in detections]
-            unmapped_text = "-".join(unmapped_chars)
-
-            processed_chars = [
-                ARABIC_MAPPING[cls]
-                for cls in unmapped_chars
+            boxes_and_classes.sort(key=lambda b: b[0])
+            unmapped_chars = [
+                cls
+                for _, _, cls, _ in boxes_and_classes
                 if cls in ARABIC_MAPPING
             ]
-            license_text = "-".join(processed_chars)
 
-            is_authorized = self.check_authorization(
-                license_text.replace("-", "")
+            license_text = "".join(
+                [
+                    ARABIC_MAPPING.get(c, c)
+                    for c in unmapped_chars
+                    if c in ARABIC_MAPPING
+                ]
             )
+            is_authorized = self.check_authorization(license_text)
 
-            if license_text:
-                self.save_frame(frame, license_text)
-
-            return license_text, unmapped_text, is_authorized
+            return license_text, is_authorized
 
         except Exception as e:
             print(f"❌ Error processing frame: {str(e)}")
-            return None, None, False
+            return None, False
 
     def detect_and_crop_plate(self, image):
         """Detect and crop license plate from frame"""
@@ -186,7 +229,10 @@ class SpherexAgent:
     def check_authorization(self, plate):
         """Check if plate is authorized"""
         try:
-            response = requests.get(BACKEND_URL, params={"zone": ZONE})
+            response = requests.get(
+                "https://dev-backend.spherex.eglobalsphere.com/api/method/spherex.api.license_plate.list",
+                params={"zone": ZONE},
+            )
             if response.status_code == 200:
                 data = response.json()
                 return plate in data.get("message", [])
@@ -212,47 +258,46 @@ class SpherexAgent:
             print("Press Ctrl+C to stop the program\n")
 
             while True:
-                if not self.cap.isOpened():
+                if not self.camera.isOpened():
                     self.connect_to_stream()
                     continue
 
-                self.cap.grab()
-                ret, frame = self.cap.read()
-                if not ret:
-                    self.cap.release()
+                frame = self.camera.read()
+                if frame is None:
+                    self.camera.release()
                     self.connect_to_stream()
                     continue
 
-                license_text, unmapped_text, is_authorized = (
+                license_text, is_authorized = (
                     self.process_frame(frame)
                 )
 
                 if license_text:
                     status_message = (
                         "✨ License Plate Detected!\n"
-                        f"📝 Plate Text (Arabic): {license_text}\n"
-                        f"📝 Plate Text (Raw): {unmapped_text}\n"
+                        f"📝 Plate Text: {license_text}\n"
                         f"🔑 Authorization: {'✅ Authorized' if is_authorized else '❌ Not Authorized'}"
                     )
                     self.display_status(
                         status_message,
                         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     )
-                    time.sleep(10)
+                    if is_authorized:
+                        print("🚗 Opening gate...")
+                        sleep(5)
                 else:
                     self.display_status(
                         "👁️ No license plate detected \n" "❌ Not Authorized",
                         datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     )
-                    time.sleep(1)
 
         except KeyboardInterrupt:
             print("\n👋 Stopping license plate detection...")
         except Exception as e:
             print(f"\n❌ An error occurred: {str(e)}")
         finally:
-            if self.cap:
-                self.cap.release()
+            if self.camera:
+                self.camera.release()
                 print("✅ Released video capture resources")
 
 
