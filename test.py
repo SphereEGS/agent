@@ -8,87 +8,68 @@ from dotenv import load_dotenv
 load_dotenv()
 CAMERA_URL = os.getenv("CAMERA_URL")
 
-
-class CameraStream:
-    def __init__(self, src):
-        self.src = src
-        self.connect()
-
-    def connect(self):
-        self.stream = cv2.VideoCapture(self.src, cv2.CAP_FFMPEG)
-        if not self.stream.isOpened():
-            raise RuntimeError("Failed to connect to camera")
-
-        # Set camera properties for better performance
-        self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self.stream.set(cv2.CAP_PROP_FPS, 30)  # Request 30 FPS
-        self.stream.set(
-            cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG")
-        )  # Use MJPG format
-
-    def read(self):
-        if not self.stream.isOpened():
-            self.connect()
-        ret, frame = self.stream.read()
-        if not ret:
-            time.sleep(1)  # Wait before retry
-            self.connect()
-            return None
-        return frame
-
-    def release(self):
-        self.stream.release()
-
-
 def capture_frames():
     # Create output directory
     os.makedirs("debug_frames", exist_ok=True)
-
+    
     print(f"Connecting to camera: {CAMERA_URL}")
-
-    last_save_time = 0  # Track last save time
-    save_interval = 1.0  # Save interval in seconds
-
-    try:
-        # Initialize camera stream
-        camera = CameraStream(CAMERA_URL)
-
-        print("Camera connected successfully")
-        print("Press 'q' to quit")
-
-        while True:
-            frame = camera.read()
-
-            if frame is None:
-                print("Error: Could not read frame")
-                break
-
-            # Display frame immediately
-            cv2.imshow("Frame", frame)
-
-            # Save frame at specified interval
-            current_time = time.time()
-            if current_time - last_save_time >= save_interval:
+    
+    while True:
+        try:
+            # Initialize camera
+            cap = cv2.VideoCapture(CAMERA_URL, cv2.CAP_FFMPEG)
+            
+            if not cap.isOpened():
+                print("Error: Could not open camera stream")
+                time.sleep(5)  # Wait before retrying
+                continue
+                
+            print("Camera connected successfully")
+            print("Capturing frames every second. Press Ctrl+C to stop.")
+            
+            # Set camera properties
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize buffer size
+            
+            while True:
+                # Flush the buffer by reading multiple frames
+                for _ in range(3):
+                    cap.grab()
+                
+                # Capture frame
+                ret, frame = cap.read()
+                
+                if not ret or frame is None:
+                    print("Error: Could not read frame")
+                    break  # Break inner loop to reinitialize camera
+                    
+                # Generate timestamp
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                
+                # Save frame
                 filename = f"debug_frames/frame_{timestamp}.jpg"
                 cv2.imwrite(filename, frame)
-                print(f"Saving: {filename}")
-                last_save_time = current_time
-
-            # Check for quit command
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-
-    except KeyboardInterrupt:
-        print("\nStopping capture...")
-    except Exception as e:
-        print(f"Error occurred: {str(e)}")
-    finally:
-        if "camera" in locals():
-            camera.release()
-        cv2.destroyAllWindows()
-        print("Camera released")
-
+                print(f"Saved: {filename}")
+                
+                # Optional: Display frame
+                cv2.imshow('Frame', frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    raise KeyboardInterrupt
+                
+                # Wait for 1 second
+                time.sleep(1)
+                
+        except KeyboardInterrupt:
+            print("\nStopping capture...")
+            break
+        except Exception as e:
+            print(f"Error occurred: {str(e)}")
+            time.sleep(5)  # Wait before retrying
+        finally:
+            if 'cap' in locals():
+                cap.release()
+            cv2.destroyAllWindows()
+            
+    print("Camera released")
 
 if __name__ == "__main__":
     capture_frames()
