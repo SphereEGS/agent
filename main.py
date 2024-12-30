@@ -110,7 +110,6 @@ class SpherexAgent:
     def __init__(self):
         self.camera = None
         self.failed_attempts = 0
-        os.makedirs("frames", exist_ok=True)
         os.makedirs("models", exist_ok=True)
         model_path = "models/license_yolo8s_1024.pt"
 
@@ -201,8 +200,7 @@ class SpherexAgent:
                 ]
             )
 
-            # is_authorized = self.check_authorization(license_text)
-            is_authorized = False
+            is_authorized = self.check_authorization(license_text)
 
             if is_authorized:
                 self.log_gate_entry(license_text, frame, is_authorized)
@@ -211,7 +209,7 @@ class SpherexAgent:
             else:
                 self.failed_attempts += 1
                 if self.failed_attempts >= 10:
-                    # self.log_gate_entry(license_text, frame, is_authorized)
+                    self.log_gate_entry(license_text, frame, is_authorized)
                     self.failed_attempts = 0
 
             if license_text:
@@ -284,28 +282,28 @@ class SpherexAgent:
     def log_gate_entry(self, plate, frame, is_authorized):
         """Log gate entry attempt"""
         try:
-            temp_file = "frames/entry_temp.jpg"
-            cv2.imwrite(temp_file, frame)
+            temp_file = "gate_entry.jpg"
+            # cv2.imwrite(temp_file, frame)
 
-            files = {
-                "file": ("entry.jpg", open(temp_file, "rb"), "image/jpeg")
-            }
-            upload_response = requests.post(
-                f"{API_BASE_URL}/method/spherex.api.upload_file", files=files
-            )
+            # files = {
+            #     "file": ("entry.jpg", open(temp_file, "rb"), "image/jpeg")
+            # }
+            # upload_response = requests.post(
+            #     f"{API_BASE_URL}/method/spherex.api.upload_file", files=files
+            # )
 
-            if upload_response.status_code != 200:
-                print(
-                    f"❌ Failed to upload entry image: {upload_response.text}"
-                )
+            # if upload_response.status_code != 200:
+            #     print(
+            #         f"❌ Failed to upload entry image: {upload_response.text}"
+            #     )
 
-            file_url = upload_response.json()["message"]["file_url"]
+            # file_url = upload_response.json()["message"]["file_url"]
 
             data = {
                 "zone": ZONE,
                 "license_plate": plate,
                 "authorized": is_authorized,
-                "file": file_url,
+                "image": "https://scontent.fphc2-1.fna.fbcdn.net/v/t51.75761-15/471984381_18382004968105703_2412204485686860596_n.jpg?_nc_cat=108&ccb=1-7&_nc_sid=127cfc&_nc_eui2=AeG-CvkLkmvYg8vIjUaZmjPLNb70b8FbK3Y1vvRvwVsrdoLo6m8wyulNr39WZE_cnAOcQaA8zvQhUiU3DXnT2VeI&_nc_ohc=cuV85Mc_XksQ7kNvgGihvZM&_nc_zt=23&_nc_ht=scontent.fphc2-1.fna&_nc_gid=Aq8GPzR3AYDVrosMrKILNT7&oh=00_AYBq0yCGORtki-52urB7cZVAO3eMBuAPaXT8NGkaYkbmyQ&oe=67788246",
             }
 
             response = requests.post(
