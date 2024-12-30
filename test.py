@@ -3,8 +3,6 @@ import time
 from datetime import datetime
 import os
 from dotenv import load_dotenv
-from threading import Thread
-import queue
 
 # Load environment variables
 load_dotenv()
@@ -19,40 +17,13 @@ class CameraStream:
         self.stream.set(cv2.CAP_PROP_FPS, 30)  # Request 30 FPS
         self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))  # Use MJPG format
         
-        self.queue = queue.Queue(maxsize=2)  # Limit queue size
-        self.stopped = False
-        
-    def start(self):
-        Thread(target=self.update, args=()).start()
-        return self
-        
-    def update(self):
-        while True:
-            if self.stopped:
-                return
-            
-            # Clear queue if full
-            if self.queue.full():
-                try:
-                    self.queue.get_nowait()
-                except queue.Empty:
-                    pass
-                    
-            ret, frame = self.stream.read()
-            if not ret:
-                self.stopped = True
-                return
-                
-            self.queue.put(frame)
-            
     def read(self):
-        return self.queue.get()
-        
-    def stop(self):
-        self.stopped = True
+        ret, frame = self.stream.read()
+        if not ret:
+            return None
+        return frame
         
     def release(self):
-        self.stopped = True
         self.stream.release()
 
 def capture_frames():
@@ -65,9 +36,8 @@ def capture_frames():
     save_interval = 1.0  # Save interval in seconds
     
     try:
-        # Initialize threaded camera stream
+        # Initialize camera stream
         camera = CameraStream(CAMERA_URL)
-        camera.start()
         
         print("Camera connected successfully")
         print("Press 'q' to quit")
@@ -87,11 +57,7 @@ def capture_frames():
             if current_time - last_save_time >= save_interval:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 filename = f"debug_frames/frame_{timestamp}.jpg"
-                
-                # Save in a separate thread to avoid blocking
-                save_thread = Thread(target=cv2.imwrite, args=(filename, frame))
-                save_thread.start()
-                
+                cv2.imwrite(filename, frame)
                 print(f"Saving: {filename}")
                 last_save_time = current_time
             
@@ -105,7 +71,6 @@ def capture_frames():
         print(f"Error occurred: {str(e)}")
     finally:
         if 'camera' in locals():
-            camera.stop()
             camera.release()
         cv2.destroyAllWindows()
         print("Camera released")
