@@ -14,6 +14,9 @@ from ultralytics import YOLO
 load_dotenv()
 ZONE = os.getenv("ZONE")
 CAMERA_URL = os.getenv("CAMERA_URL")
+API_BASE_URL = (
+    "https://dev-backend.spherex.eglobalsphere.com/api/method/spherex.api"
+)
 
 ARABIC_MAPPING = {
     "baa": "\u0628",
@@ -98,6 +101,7 @@ class CameraStream:
 class SpherexAgent:
     def __init__(self):
         self.camera = None
+        self.failed_attempts = 0
         os.makedirs("frames", exist_ok=True)
         os.makedirs("models", exist_ok=True)
         model_path = "models/license_yolo_N_96.5_1024.pt"
@@ -179,7 +183,17 @@ class SpherexAgent:
                     if c in ARABIC_MAPPING
                 ]
             )
+
             is_authorized = self.check_authorization(license_text)
+
+            if is_authorized:
+                self.log_gate_entry(license_text, frame)
+                self.failed_attempts = 0
+            else:
+                self.failed_attempts += 1
+                if self.failed_attempts >= 10:
+                    self.log_unauthorized_attempt(license_text, frame)
+                    self.failed_attempts = 0
 
             return license_text, is_authorized
 
@@ -227,19 +241,41 @@ class SpherexAgent:
         return image[y1:y2, x1:x2]
 
     def check_authorization(self, plate):
-        """Check if plate is authorized"""
+        """Check if plate is authorized using the new endpoint"""
         try:
-            response = requests.get(
-                "https://dev-backend.spherex.eglobalsphere.com/api/method/spherex.api.license_plate.list",
-                params={"zone": ZONE},
+            response = requests.post(
+                f"{API_BASE_URL}/license_plate.authorize",
+                json={"zone": ZONE, "plate": plate},
             )
-            if response.status_code == 200:
-                data = response.json()
-                return plate in data.get("message", [])
-            return False
+            return response.status_code == 200
         except Exception as e:
             print(f"❌ Authorization check error: {e}")
             return False
+
+    def log_unauthorized_attempt(self, plate, frame):
+        """Log unauthorized attempt after 10 failures"""
+        try:
+            _, img_encoded = cv2.imencode(".jpg", frame)
+            import base64
+
+            img_base64 = base64.b64encode(img_encoded.tobytes()).decode()
+
+            response = requests.post(
+                f"{API_BASE_URL}/license_plate.log_unauthorized",
+                json={
+                    "zone": ZONE,
+                    "plate": plate,
+                    "image": img_base64,
+                },
+            )
+            if response.status_code != 200:
+                print(
+                    f"❌ Failed to log unauthorized attempt: {response.text}"
+                )
+                sleep(1)
+        except Exception as e:
+            print(f"❌ Error logging unauthorized attempt: {e}")
+            sleep(1)
 
     def display_status(self, message, timestamp):
         """Display status without screen clearing"""
@@ -268,15 +304,14 @@ class SpherexAgent:
                     self.connect_to_stream()
                     continue
 
-                license_text, is_authorized = (
-                    self.process_frame(frame)
-                )
+                license_text, is_authorized = self.process_frame(frame)
 
                 if license_text:
                     status_message = (
                         "✨ License Plate Detected!\n"
                         f"📝 Plate Text: {license_text}\n"
-                        f"🔑 Authorization: {'✅ Authorized' if is_authorized else '❌ Not Authorized'}"
+                        f"🔑 Authorization: {'✅ Authorized' if is_authorized else '❌ Not Authorized'}\n"
+                        f"❌ Failed Attempts: {self.failed_attempts}/10"
                     )
                     self.display_status(
                         status_message,
