@@ -14,41 +14,49 @@ from ultralytics import YOLO
 load_dotenv()
 ZONE = os.getenv("ZONE")
 CAMERA_URL = os.getenv("CAMERA_URL")
-API_BASE_URL = (
-    "https://dev-backend.spherex.eglobalsphere.com/api/method/spherex.api"
-)
+API_BASE_URL = "https://dev-backend.spherex.eglobalsphere.com/api"
 
 ARABIC_MAPPING = {
-    "baa": "\u0628",
-    "Laam": "\u0644",
-    "Taa": "\u0637",
-    "7aah": "\u062d",
-    "Daad": "\u0636",
-    "Een": "\u0639",
-    "F": "\u0641",
-    "Kaaf": "\u0643",
-    "Meem": "\u0645",
-    "Noon": "\u0646",
-    "Q": "\u0642",
-    "R": "\u0631",
-    "Saad": "\u0635",
-    "Seen": "\u0633",
-    "Wow": "\u0648",
-    "Yeeh": "\u064a",
-    "Zeen": "\u0632",
-    "alef": "\u0623",
-    "daal": "\u062f",
-    "geem": "\u062c",
-    "Heeh": "\u0647",
-    "1": "\u0661",
-    "2": "\u0662",
-    "3": "\u0663",
-    "4": "\u0664",
-    "5": "\u0665",
-    "6": "\u0666",
-    "7": "\u0667",
-    "8": "\u0668",
-    "9": "\u0669",
+    "0": "٠",
+    "1": "١",
+    "2": "٢",
+    "3": "٣",
+    "4": "٤",
+    "5": "٥",
+    "6": "٦",
+    "7": "٧",
+    "8": "٨",
+    "9": "٩",
+    "Beh": "ب",
+    "Daad": "ض",
+    "Een": "ع",
+    "F": "ف",
+    "Heeh": "هه",
+    "Kaaf": "ك",
+    "Laam": "ل",
+    "License Plate": "",
+    "Meem": "م",
+    "Noon": "ن",
+    "Q": "ق",
+    "R": "ر",
+    "Saad": "ص",
+    "Seen": "س",
+    "Taa": "ط",
+    "Wow": "و",
+    "Yeeh": "ي",
+    "Zah": "ظ",
+    "Zeen": "ز",
+    "alef": "أ",
+    "car": "",
+    "daal": "د",
+    "geem": "ج",
+    "ghayn": "غ",
+    "khaa": "خ",
+    "sheen": "ش",
+    "teh": "ت",
+    "theh": "ث",
+    "zaal": "ذ",
+    "7aah": "ح",
 }
 
 
@@ -104,14 +112,14 @@ class SpherexAgent:
         self.failed_attempts = 0
         os.makedirs("frames", exist_ok=True)
         os.makedirs("models", exist_ok=True)
-        model_path = "models/license_yolo_N_96.5_1024.pt"
+        model_path = "models/license_yolo8s_1024.pt"
 
         try:
             if not os.path.exists(model_path):
                 print("Downloading model for the first time...")
                 model_dir = snapshot_download("omarelsayeed/licence_plates")
                 source_model = os.path.join(
-                    model_dir, "license_yolo_N_96.5_1024.pt"
+                    model_dir, "license_yolo8s_1024.pt"
                 )
                 import shutil
 
@@ -123,6 +131,13 @@ class SpherexAgent:
         except Exception as e:
             print(f"❌ Error loading model: {str(e)}")
             exit(1)
+
+    def display_no_plate_message(self):
+        """Display message when no license plate is detected"""
+        self.display_status(
+            "👁️ No license plate detected \n❌ Not Authorized",
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        )
 
     def connect_to_stream(self):
         """Establish connection to RTSP stream"""
@@ -147,13 +162,15 @@ class SpherexAgent:
         try:
             cropped_plate = self.detect_and_crop_plate(frame)
             if cropped_plate is None:
-                return None, False
+                self.display_no_plate_message()
+                return
 
             results = self.model.predict(
                 cropped_plate, conf=0.25, iou=0.45, imgsz=1024, verbose=False
             )
             if not results:
-                return None, False
+                self.display_no_plate_message()
+                return
 
             boxes_and_classes = [
                 (
@@ -184,22 +201,34 @@ class SpherexAgent:
                 ]
             )
 
-            is_authorized = self.check_authorization(license_text)
+            # is_authorized = self.check_authorization(license_text)
+            is_authorized = False
 
             if is_authorized:
-                self.log_gate_entry(license_text, frame)
+                self.log_gate_entry(license_text, frame, is_authorized)
                 self.failed_attempts = 0
+                sleep(5)
             else:
                 self.failed_attempts += 1
                 if self.failed_attempts >= 10:
-                    self.log_unauthorized_attempt(license_text, frame)
+                    # self.log_gate_entry(license_text, frame, is_authorized)
                     self.failed_attempts = 0
 
-            return license_text, is_authorized
+            if license_text:
+                status_message = (
+                    "✨ License Plate Detected!\n"
+                    f"📝 Plate Text: {license_text}\n"
+                    f"🔑 Authorization: {'✅ Authorized' if is_authorized else '❌ Not Authorized'}\n"
+                )
+                self.display_status(
+                    status_message,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                )
+            else:
+                self.display_no_plate_message()
 
         except Exception as e:
             print(f"❌ Error processing frame: {str(e)}")
-            return None, False
 
     def detect_and_crop_plate(self, image):
         """Detect and crop license plate from frame"""
@@ -244,38 +273,52 @@ class SpherexAgent:
         """Check if plate is authorized using the new endpoint"""
         try:
             response = requests.post(
-                f"{API_BASE_URL}/license_plate.authorize",
-                json={"zone": ZONE, "plate": plate},
+                f"{API_BASE_URL}/method/spherex.api.license_plate.authorize",
+                params={"zone": ZONE, "plate": plate},
             )
             return response.status_code == 200
         except Exception as e:
             print(f"❌ Authorization check error: {e}")
             return False
 
-    def log_unauthorized_attempt(self, plate, frame):
-        """Log unauthorized attempt after 10 failures"""
+    def log_gate_entry(self, plate, frame, is_authorized):
+        """Log gate entry attempt"""
         try:
-            _, img_encoded = cv2.imencode(".jpg", frame)
-            import base64
+            temp_file = "frames/entry_temp.jpg"
+            cv2.imwrite(temp_file, frame)
 
-            img_base64 = base64.b64encode(img_encoded.tobytes()).decode()
+            files = {
+                "file": ("entry.jpg", open(temp_file, "rb"), "image/jpeg")
+            }
+            upload_response = requests.post(
+                f"{API_BASE_URL}/method/spherex.api.upload_file", files=files
+            )
+
+            if upload_response.status_code != 200:
+                print(
+                    f"❌ Failed to upload entry image: {upload_response.text}"
+                )
+
+            file_url = upload_response.json()["message"]["file_url"]
+
+            data = {
+                "zone": ZONE,
+                "license_plate": plate,
+                "authorized": is_authorized,
+                "file": file_url,
+            }
 
             response = requests.post(
-                f"{API_BASE_URL}/license_plate.log_unauthorized",
-                json={
-                    "zone": ZONE,
-                    "plate": plate,
-                    "image": img_base64,
-                },
+                f"{API_BASE_URL}/resource/Gate Entry Log", data=data
             )
+
+            os.remove(temp_file)
+
             if response.status_code != 200:
-                print(
-                    f"❌ Failed to log unauthorized attempt: {response.text}"
-                )
-                sleep(1)
+                print(f"❌ Failed to log entry attempt: {response.text}")
+
         except Exception as e:
-            print(f"❌ Error logging unauthorized attempt: {e}")
-            sleep(1)
+            print(f"❌ Error logging entry attempt: {e}")
 
     def display_status(self, message, timestamp):
         """Display status without screen clearing"""
@@ -304,28 +347,7 @@ class SpherexAgent:
                     self.connect_to_stream()
                     continue
 
-                license_text, is_authorized = self.process_frame(frame)
-
-                if license_text:
-                    status_message = (
-                        "✨ License Plate Detected!\n"
-                        f"📝 Plate Text: {license_text}\n"
-                        f"🔑 Authorization: {'✅ Authorized' if is_authorized else '❌ Not Authorized'}\n"
-                        f"❌ Failed Attempts: {self.failed_attempts}/10"
-                    )
-                    self.display_status(
-                        status_message,
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    )
-                    if is_authorized:
-                        print("🚗 Opening gate...")
-                        sleep(5)
-                else:
-                    self.display_status(
-                        "👁️ No license plate detected \n" "❌ Not Authorized",
-                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    )
-
+                self.process_frame(frame)
         except KeyboardInterrupt:
             print("\n👋 Stopping license plate detection...")
         except Exception as e:
