@@ -208,15 +208,16 @@ class SpherexAgent:
                 sleep(5)
             else:
                 self.failed_attempts += 1
-                if self.failed_attempts >= 10:
+                if self.failed_attempts >= 5:
                     self.log_gate_entry(license_text, frame, is_authorized)
                     self.failed_attempts = 0
 
             if license_text:
+                auth_status = '✅ Authorized' if is_authorized else f'❌ Not Authorized (Failed Attempts: {self.failed_attempts}/5)'
                 status_message = (
                     "✨ License Plate Detected!\n"
                     f"📝 Plate Text: {license_text}\n"
-                    f"🔑 Authorization: {'✅ Authorized' if is_authorized else '❌ Not Authorized'}\n"
+                    f"🔑 Authorization: {auth_status}\n"
                 )
                 self.display_status(
                     status_message,
@@ -297,13 +298,13 @@ class SpherexAgent:
                     f"❌ Failed to upload entry image: {upload_response.text}"
                 )
 
-            # file_url = upload_response.json()["message"]["file_url"]
+            file_url = upload_response.json()["message"]["file_url"]
 
             data = {
                 "zone": ZONE,
                 "license_plate": plate,
                 "authorized": is_authorized,
-                "image": "https://scontent.fphc2-1.fna.fbcdn.net/v/t51.75761-15/471984381_18382004968105703_2412204485686860596_n.jpg?_nc_cat=108&ccb=1-7&_nc_sid=127cfc&_nc_eui2=AeG-CvkLkmvYg8vIjUaZmjPLNb70b8FbK3Y1vvRvwVsrdoLo6m8wyulNr39WZE_cnAOcQaA8zvQhUiU3DXnT2VeI&_nc_ohc=cuV85Mc_XksQ7kNvgGihvZM&_nc_zt=23&_nc_ht=scontent.fphc2-1.fna&_nc_gid=Aq8GPzR3AYDVrosMrKILNT7&oh=00_AYBq0yCGORtki-52urB7cZVAO3eMBuAPaXT8NGkaYkbmyQ&oe=67788246",
+                "image": file_url,
             }
 
             response = requests.post(
