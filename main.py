@@ -286,13 +286,108 @@ class SpherexAgent:
             print(f"❌ Authorization check error: {e}")
             return False
 
+    def log_gate_entry(self, plate, frame, is_authorized):
+        """Log gate entry attempt with both normal and reversed plate text overlay"""
+        try:
+            # Process normal orientation
+            frame_with_normal_text = self.add_text_to_image(
+                frame, plate, reverse_text=False
+            )
+            temp_file_normal = "gate_entry_normal.jpg"
+            cv2.imwrite(temp_file_normal, frame_with_normal_text)
 
-    def add_text_to_image(self, image, text):
-        """Add Arabic text to the image with independent character rendering"""
+            # Process reversed orientation
+            frame_with_reversed_text = self.add_text_to_image(
+                frame, plate, reverse_text=True
+            )
+            temp_file_reversed = "gate_entry_reversed.jpg"
+            cv2.imwrite(temp_file_reversed, frame_with_reversed_text)
+
+            # Upload both images
+            files_normal = {
+                "file": (
+                    "entry_normal.jpg",
+                    open(temp_file_normal, "rb"),
+                    "image/jpeg",
+                )
+            }
+            files_reversed = {
+                "file": (
+                    "entry_reversed.jpg",
+                    open(temp_file_reversed, "rb"),
+                    "image/jpeg",
+                )
+            }
+
+            # Upload normal orientation
+            upload_response_normal = requests.post(
+                f"{API_BASE_URL}/method/spherex.api.upload_file",
+                files=files_normal,
+            )
+
+            # Upload reversed orientation
+            upload_response_reversed = requests.post(
+                f"{API_BASE_URL}/method/spherex.api.upload_file",
+                files=files_reversed,
+            )
+
+            if (
+                upload_response_normal.status_code != 200
+                or upload_response_reversed.status_code != 200
+            ):
+                print(f"❌ Failed to upload one or both entry images")
+                return
+
+            file_url_normal = upload_response_normal.json()["message"][
+                "file_url"
+            ]
+            file_url_reversed = upload_response_reversed.json()["message"][
+                "file_url"
+            ]
+
+            # Log both entries
+            data_normal = {
+                "zone": ZONE,
+                "license_plate": plate,
+                "authorized": is_authorized,
+                "image": file_url_normal,
+                "text_orientation": "normal",
+            }
+
+            data_reversed = {
+                "zone": ZONE,
+                "license_plate": plate,
+                "authorized": is_authorized,
+                "image": file_url_reversed,
+                "text_orientation": "reversed",
+            }
+
+            response_normal = requests.post(
+                f"{API_BASE_URL}/resource/Gate Entry Log", data=data_normal
+            )
+
+            response_reversed = requests.post(
+                f"{API_BASE_URL}/resource/Gate Entry Log", data=data_reversed
+            )
+
+            # Clean up temporary files
+            os.remove(temp_file_normal)
+            os.remove(temp_file_reversed)
+
+            if (
+                response_normal.status_code != 200
+                or response_reversed.status_code != 200
+            ):
+                print(f"❌ Failed to log one or both entry attempts")
+
+        except Exception as e:
+            print(f"❌ Error logging entry attempts: {e}")
+
+    def add_text_to_image(self, image, text, reverse_text=False):
+        """Add Arabic text to the image with configurable text orientation"""
         if not text:
             return image
 
-        # Convert OpenCV image (BGR) to PIL Image (RGB)
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(image_rgb)
 
@@ -308,9 +403,10 @@ class SpherexAgent:
 
             draw = ImageDraw.Draw(pil_image)
 
-            separated_text = "-".join(
-                reversed(list(text))
-            )
+            if reverse_text:
+                separated_text = "-".join(list(text))
+            else:
+                separated_text = "-".join(reversed(list(text)))
 
             padding = 20
             text_bbox = draw.textbbox((0, 0), separated_text, font=font)
@@ -336,48 +432,6 @@ class SpherexAgent:
         except Exception as e:
             print(f"⚠️ Warning: Could not add text to image: {str(e)}")
             return image
-
-    def log_gate_entry(self, plate, frame, is_authorized):
-        """Log gate entry attempt with plate text overlay"""
-        try:
-            frame_with_text = self.add_text_to_image(frame, plate)
-
-            temp_file = "gate_entry.jpg"
-            cv2.imwrite(temp_file, frame_with_text)
-
-            files = {
-                "file": ("entry.jpg", open(temp_file, "rb"), "image/jpeg")
-            }
-            upload_response = requests.post(
-                f"{API_BASE_URL}/method/spherex.api.upload_file", files=files
-            )
-
-            if upload_response.status_code != 200:
-                print(
-                    f"❌ Failed to upload entry image: {upload_response.text}"
-                )
-                return
-
-            file_url = upload_response.json()["message"]["file_url"]
-
-            data = {
-                "zone": ZONE,
-                "license_plate": plate,
-                "authorized": is_authorized,
-                "image": file_url,
-            }
-
-            response = requests.post(
-                f"{API_BASE_URL}/resource/Gate Entry Log", data=data
-            )
-
-            os.remove(temp_file)
-
-            if response.status_code != 200:
-                print(f"❌ Failed to log entry attempt: {response.text}")
-
-        except Exception as e:
-            print(f"❌ Error logging entry attempt: {e}")
 
     def display_status(self, message, timestamp):
         """Display status without screen clearing"""
