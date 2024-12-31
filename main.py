@@ -10,6 +10,7 @@ import requests
 from dotenv import load_dotenv
 from huggingface_hub import snapshot_download
 from ultralytics import YOLO
+from PIL import Image, ImageDraw, ImageFont
 
 load_dotenv()
 ZONE = os.getenv("ZONE")
@@ -112,6 +113,7 @@ class SpherexAgent:
         self.failed_attempts = 0
         os.makedirs("models", exist_ok=True)
         model_path = "models/license_yolo8s_1024.pt"
+        self.font_path = "./fonts/DejaVuSans.ttf"
 
         try:
             if not os.path.exists(model_path):
@@ -213,7 +215,11 @@ class SpherexAgent:
                     self.failed_attempts = 0
 
             if license_text:
-                auth_status = '✅ Authorized' if is_authorized else f'❌ Not Authorized (Failed Attempts: {self.failed_attempts}/5)'
+                auth_status = (
+                    "✅ Authorized"
+                    if is_authorized
+                    else f"❌ Not Authorized (Failed Attempts: {self.failed_attempts}/5)"
+                )
                 status_message = (
                     "✨ License Plate Detected!\n"
                     f"📝 Plate Text: {license_text}\n"
@@ -280,11 +286,74 @@ class SpherexAgent:
             print(f"❌ Authorization check error: {e}")
             return False
 
-    def log_gate_entry(self, plate, frame, is_authorized):
-        """Log gate entry attempt"""
+
+    def add_text_to_image(self, image, text):
+        """Add Arabic text to the image with independent character rendering"""
+        if not text:
+            return image
+
+        # Convert OpenCV image (BGR) to PIL Image (RGB)
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(image_rgb)
+
+        # Calculate text size and position
+        height, width = image.shape[:2]
+        font_size = int(height / 15)  # Font size for visibility
+
         try:
+            # Create font object
+            font = (
+                ImageFont.truetype(self.font_path, font_size)
+                if self.font_path
+                else ImageFont.load_default()
+            )
+
+            # Create draw object
+            draw = ImageDraw.Draw(pil_image)
+
+            # Separate each character and add spaces between them
+            separated_text = "-".join(
+                reversed(list(text))
+            )  # Reverse for RTL and add spaces
+
+            # Calculate total width needed for the separated text
+            padding = 20
+            text_bbox = draw.textbbox((0, 0), separated_text, font=font)
+            text_width = text_bbox[2] - text_bbox[0]
+            text_height = text_bbox[3] - text_bbox[1]
+
+            # Position text in bottom left with padding
+            x = padding
+            y = height - text_height - padding * 2
+
+            # Draw semi-transparent background
+            background_coords = [
+                x - padding,
+                y - padding,
+                x + text_width + padding,
+                y + text_height + padding,
+            ]
+            draw.rectangle(background_coords, fill=(0, 0, 0, 180))
+
+            # Draw separated text
+            draw.text((x, y), separated_text, font=font, fill=(255, 255, 255))
+
+            # Convert back to OpenCV image
+            result_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+            return result_image
+
+        except Exception as e:
+            print(f"⚠️ Warning: Could not add text to image: {str(e)}")
+            return image
+
+    def log_gate_entry(self, plate, frame, is_authorized):
+        """Log gate entry attempt with plate text overlay"""
+        try:
+            # Add the license plate text to the image
+            frame_with_text = self.add_text_to_image(frame, plate)
+
             temp_file = "gate_entry.jpg"
-            cv2.imwrite(temp_file, frame)
+            cv2.imwrite(temp_file, frame_with_text)
 
             files = {
                 "file": ("entry.jpg", open(temp_file, "rb"), "image/jpeg")
@@ -297,6 +366,7 @@ class SpherexAgent:
                 print(
                     f"❌ Failed to upload entry image: {upload_response.text}"
                 )
+                return
 
             file_url = upload_response.json()["message"]["file_url"]
 
@@ -311,7 +381,7 @@ class SpherexAgent:
                 f"{API_BASE_URL}/resource/Gate Entry Log", data=data
             )
 
-            os.remove(temp_file)
+            # os.remove(temp_file)
 
             if response.status_code != 200:
                 print(f"❌ Failed to log entry attempt: {response.text}")
