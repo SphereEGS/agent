@@ -283,19 +283,19 @@ class SpherexAgent:
         """Log gate entry attempt"""
         try:
             temp_file = "gate_entry.jpg"
-            # cv2.imwrite(temp_file, frame)
+            cv2.imwrite(temp_file, frame)
 
-            # files = {
-            #     "file": ("entry.jpg", open(temp_file, "rb"), "image/jpeg")
-            # }
-            # upload_response = requests.post(
-            #     f"{API_BASE_URL}/method/spherex.api.upload_file", files=files
-            # )
+            files = {
+                "file": ("entry.jpg", open(temp_file, "rb"), "image/jpeg")
+            }
+            upload_response = requests.post(
+                f"{API_BASE_URL}/method/spherex.api.upload_file", files=files
+            )
 
-            # if upload_response.status_code != 200:
-            #     print(
-            #         f"❌ Failed to upload entry image: {upload_response.text}"
-            #     )
+            if upload_response.status_code != 200:
+                print(
+                    f"❌ Failed to upload entry image: {upload_response.text}"
+                )
 
             # file_url = upload_response.json()["message"]["file_url"]
 

@@ -3,3 +3,4 @@ venv
 *.env
 models
 frames
+debug_frames
