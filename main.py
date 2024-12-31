@@ -203,13 +203,13 @@ class SpherexAgent:
             is_authorized = self.check_authorization(license_text)
 
             if is_authorized:
-                self.log_gate_entry(license_text, frame, is_authorized)
+                self.log_gate_entry(license_text, frame, True)
                 self.failed_attempts = 0
                 sleep(5)
             else:
                 self.failed_attempts += 1
                 if self.failed_attempts >= 5:
-                    self.log_gate_entry(license_text, frame, is_authorized)
+                    self.log_gate_entry(license_text, frame, None)
                     self.failed_attempts = 0
 
             if license_text:
