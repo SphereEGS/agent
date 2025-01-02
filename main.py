@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 from huggingface_hub import snapshot_download
 from ultralytics import YOLO
 from PIL import Image, ImageDraw, ImageFont
+import biostarPython as g
+from biostarPython.service import connect_pb2, door_pb2, device_pb2
 
 load_dotenv()
 ZONE = os.getenv("ZONE")
@@ -59,6 +61,29 @@ ARABIC_MAPPING = {
     "zaal": "ذ",
     "7aah": "ح",
 }
+
+
+class DoorControl:
+    def __init__(
+        self, gateway_ip="127.0.0.1", gateway_port=4000, ca_file="./controller/cert/ca.crt"
+    ):
+        self.gateway = g.GatewayClient(gateway_ip, gateway_port, ca_file)
+        self.channel = self.gateway.getChannel()
+        self.connect_svc = g.ConnectSvc(self.channel)
+        self.door_svc = g.DoorSvc(self.channel)
+        devices = self.connect_svc.searchDevice(300)
+        if not devices:
+            raise RuntimeError("No device found")
+        conn_info = connect_pb2.ConnectInfo(
+            IPAddr=devices[0].IPAddr, port=devices[0].port, useSSL=False
+        )
+        self.device_id = self.connect_svc.connect(conn_info)
+
+    def open_door(self):
+        self.door_svc.unlock(self.device_id, [1], door_pb2.OPERATOR)
+
+    def lock_door(self):
+        self.door_svc.lock(self.device_id, [1], door_pb2.OPERATOR)
 
 
 class CameraStream:
@@ -114,6 +139,7 @@ class SpherexAgent:
         os.makedirs("models", exist_ok=True)
         model_path = "models/license_yolo8s_1024.pt"
         self.font_path = "./fonts/DejaVuSans.ttf"
+        self.door_control = DoorControl()
 
         try:
             if not os.path.exists(model_path):
@@ -207,7 +233,7 @@ class SpherexAgent:
             if is_authorized:
                 self.log_gate_entry(license_text, frame, True)
                 self.failed_attempts = 0
-                sleep(3)
+                self.door_control.open_door()
             else:
                 self.failed_attempts += 1
                 if self.failed_attempts >= 3:
@@ -234,6 +260,8 @@ class SpherexAgent:
 
         except Exception as e:
             print(f"❌ Error processing frame: {str(e)}")
+        finally:
+            self.door_control.lock_door()
 
     def detect_and_crop_plate(self, image):
         """Detect and crop license plate from frame"""
