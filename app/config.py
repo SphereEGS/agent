@@ -17,7 +17,6 @@ CONTROLLER_PORT = os.getenv("CONTROLLER_PORT", 4000)
 CONTROLLER_CA_PATH = os.getenv(
     "CONTROLLER_CA_PATH", "controller/cert/ca.crt"
 )
-GATE_ID = os.getenv("GATE_ID", 1)
 ARABIC_MAPPING = {
     "0": "٠",
     "1": "١",

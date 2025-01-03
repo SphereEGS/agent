@@ -5,7 +5,6 @@ from app.config import (
     CONTROLLER_CA_PATH,
     CONTROLLER_IP,
     CONTROLLER_PORT,
-    GATE_ID,
 )
 
 
@@ -29,9 +28,9 @@ class GateControl:
         self.device_id = self.connect_svc.connect(conn_info)
 
     def unlock(self):
-        self.door_svc.unlock(self.device_id, [GATE_ID], door_pb2.OPERATOR)
+        self.door_svc.unlock(self.device_id, [1], door_pb2.OPERATOR)
         print("🔓 Gate unlocked")
 
     def lock(self):
-        self.door_svc.lock(self.device_id, [GATE_ID], door_pb2.OPERATOR)
+        self.door_svc.lock(self.device_id, [1], door_pb2.OPERATOR)
         print("🔒 Gate locked")
