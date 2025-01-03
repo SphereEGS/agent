@@ -6,3 +6,5 @@ frames
 debug_frames
 controller
 *.log
+__pycache__
+*.pyc
