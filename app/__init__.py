@@ -7,6 +7,7 @@ from .config import CAMERA_URL, ZONE, API_BASE_URL
 from .model import PlateDetector
 from .sync import SyncManager
 from .gate import GateControl
+from time import sleep
 
 
 class SpherexAgent:
@@ -107,6 +108,7 @@ class SpherexAgent:
                 self.log_gate_entry(license_text, frame, True)
                 self.failed_attempts = 0
                 self.is_logged = False
+                sleep(5)
             else:
                 self.failed_attempts += 1
                 self.gate.unlock()
