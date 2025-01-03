@@ -30,6 +30,8 @@ class GateControl:
 
     def unlock(self):
         self.door_svc.unlock(self.device_id, [GATE_ID], door_pb2.OPERATOR)
+        print("🔓 Gate unlocked")
 
     def lock(self):
         self.door_svc.lock(self.device_id, [GATE_ID], door_pb2.OPERATOR)
+        print("🔒 Gate locked")
