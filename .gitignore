@@ -4,3 +4,5 @@ venv
 models
 frames
 debug_frames
+controller
+*.log
