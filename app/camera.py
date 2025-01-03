@@ -6,7 +6,11 @@ import cv2
 
 class CameraStream:
     def __init__(self, src):
+        if isinstance(src, str):
+            src = int(src) if src.isdigit() else src
         self.stream = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
+        if not self.stream.isOpened():
+            raise ValueError(f"Failed to open video source: {src}")
         self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self.stream.set(cv2.CAP_PROP_FPS, 30)
         self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
