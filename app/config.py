@@ -32,7 +32,7 @@ ARABIC_MAPPING = {
     "Daad": "ض",
     "Een": "ع",
     "F": "ف",
-    "Heeh": "هه",
+    "Heeh": "هـ",
     "Kaaf": "ك",
     "Laam": "ل",
     "License Plate": "",
