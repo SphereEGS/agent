@@ -58,7 +58,9 @@ class SpherexAgent:
                     f"{API_BASE_URL}/method/spherex.api.upload_file",
                     files=files,
                 )
-                log_data["image"] = upload_response.json().get("file_url")
+                log_data["image"] = upload_response.json()["message"][
+                    "file_url"
+                ]
 
             requests.post(
                 f"{API_BASE_URL}/resource/Gate Entry Log",
@@ -101,21 +103,6 @@ class SpherexAgent:
                 return
 
             is_authorized = self.plate_cache.is_authorized(license_text)
-            print(self.plate_cache.allowed_plates)
-
-            if is_authorized:
-                self.gate.unlock()
-                self.log_gate_entry(license_text, frame, True)
-                self.failed_attempts = 0
-                self.is_logged = False
-                sleep(5)
-            else:
-                self.failed_attempts += 1
-                self.gate.unlock()
-                if self.failed_attempts >= 3 and not self.is_logged:
-                    self.log_gate_entry(license_text, frame, False)
-                    self.is_logged = True
-
             auth_status = (
                 "✅ Authorized"
                 if is_authorized
@@ -127,10 +114,27 @@ class SpherexAgent:
                 f"📝 Plate Text: {license_text[::-1]}\n"
                 f"🔑 Authorization: {auth_status}\n"
             )
-            self.display_status(
-                status_message,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            )
+            if is_authorized:
+                self.gate.unlock()
+                self.log_gate_entry(license_text, frame, 1)
+                self.failed_attempts = 0
+                self.is_logged = False
+                self.display_status(
+                    status_message,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                sleep(5)
+            else:
+                self.failed_attempts += 1
+                self.gate.lock()
+                if self.failed_attempts >= 3 and not self.is_logged:
+                    self.log_gate_entry(license_text, frame, 0)
+                    self.is_logged = True
+
+                self.display_status(
+                    status_message,
+                    datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                )
 
         except Exception as e:
             print(f"❌ Error processing frame: {str(e)}")

@@ -33,4 +33,4 @@ class SyncManager:
 
     def is_authorized(self, plate):
         with self.lock:
-            return plate in self.allowed_plates
+            return plate in self.allowed_plates or plate[::-1] in self.allowed_plates
