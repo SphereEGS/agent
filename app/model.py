@@ -104,7 +104,7 @@ class PlateDetector:
             )
             draw = ImageDraw.Draw(pil_image)
 
-            separated_text = "-".join(text[::-1])
+            separated_text = "-".join(text)
             padding = 20
 
             text_bbox = draw.textbbox((0, 0), separated_text, font=font)
