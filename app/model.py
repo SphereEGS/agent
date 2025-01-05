@@ -82,13 +82,9 @@ class PlateDetector:
         ]
 
         license_text = "".join(
-            [
-                ARABIC_MAPPING.get(c, c)
-                for c in unmapped_chars
-                if c in ARABIC_MAPPING
-            ]
+            [ARABIC_MAPPING.get(c, c) for c in unmapped_chars if c in ARABIC_MAPPING]
         )
-        return "".join(reversed(license_text)) if license_text else None
+        return "".join(license_text) if license_text else None
 
     def add_text_to_image(self, image, text):
         if not text:
@@ -108,7 +104,7 @@ class PlateDetector:
             )
             draw = ImageDraw.Draw(pil_image)
 
-            separated_text = "-".join(text)
+            separated_text = "-".join(text[::-1])
             padding = 20
 
             text_bbox = draw.textbbox((0, 0), separated_text, font=font)

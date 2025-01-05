@@ -39,9 +39,7 @@ class SpherexAgent:
 
     def log_gate_entry(self, plate, frame, is_authorized):
         try:
-            frame_with_text = self.plate_detector.add_text_to_image(
-                frame, plate
-            )
+            frame_with_text = self.plate_detector.add_text_to_image(frame, plate)
             temp_file = "gate_entry.jpg"
             cv2.imwrite(temp_file, frame_with_text)
 
@@ -58,9 +56,7 @@ class SpherexAgent:
                     f"{API_BASE_URL}/method/spherex.api.upload_file",
                     files=files,
                 )
-                log_data["image"] = upload_response.json()["message"][
-                    "file_url"
-                ]
+                log_data["image"] = upload_response.json()["message"]["file_url"]
 
             requests.post(
                 f"{API_BASE_URL}/resource/Gate Entry Log",
@@ -111,18 +107,18 @@ class SpherexAgent:
             )
             status_message = (
                 "✨ License Plate Detected!\n"
-                f"📝 Plate Text: {license_text[::-1]}\n"
+                f"📝 Plate Text: {license_text}\n"
                 f"🔑 Authorization: {auth_status}\n"
             )
             if is_authorized:
                 self.gate.unlock()
-                self.log_gate_entry(license_text, frame, 1)
                 self.failed_attempts = 0
                 self.is_logged = False
                 self.display_status(
                     status_message,
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 )
+                self.log_gate_entry(license_text, frame, 1)
                 sleep(5)
             else:
                 self.failed_attempts += 1

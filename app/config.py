@@ -14,9 +14,7 @@ MODEL_PATH = os.getenv("MODEL_PATH", "models/license_yolo8s_1024.pt")
 UPDATE_INTERVAL = 10
 CONTROLLER_IP = os.getenv("CONTROLLER_IP", "127.0.0.1")
 CONTROLLER_PORT = os.getenv("CONTROLLER_PORT", 4000)
-CONTROLLER_CA_PATH = os.getenv(
-    "CONTROLLER_CA_PATH", "controller/cert/ca.crt"
-)
+CONTROLLER_CA_PATH = os.getenv("CONTROLLER_CA_PATH", "controller/cert/ca.crt")
 ARABIC_MAPPING = {
     "0": "٠",
     "1": "١",
@@ -32,7 +30,7 @@ ARABIC_MAPPING = {
     "Daad": "ض",
     "Een": "ع",
     "F": "ف",
-    "Heeh": "هـ",
+    "Heeh": "H",
     "Kaaf": "ك",
     "Laam": "ل",
     "License Plate": "",
