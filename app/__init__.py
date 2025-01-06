@@ -119,7 +119,7 @@ class SpherexAgent:
                     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 )
                 self.log_gate_entry(license_text, frame, 1)
-                sleep(5)
+                sleep(1)
             else:
                 self.failed_attempts += 1
                 self.gate.lock()
