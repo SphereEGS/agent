@@ -4,4 +4,3 @@ requests
 ultralytics
 huggingface-hub
 python-dotenv
-biostarPython

@@ -1,36 +1,29 @@
-import biostarPython as g
-from biostarPython.service import connect_pb2, door_pb2
-
-from app.config import (
-    CONTROLLER_CA_PATH,
-    CONTROLLER_IP,
-    CONTROLLER_PORT,
-)
+import requests
+from app.config import CONTROLLER_IP, CONTROLLER_KEY, DOOR_ID
 
 
 class GateControl:
-    def __init__(
-        self,
-        gateway_ip=CONTROLLER_IP,
-        gateway_port=CONTROLLER_PORT,
-        ca_file=CONTROLLER_CA_PATH,
-    ):
-        self.gateway = g.GatewayClient(gateway_ip, gateway_port, ca_file)
-        self.channel = self.gateway.getChannel()
-        self.connect_svc = g.ConnectSvc(self.channel)
-        self.door_svc = g.DoorSvc(self.channel)
-        devices = self.connect_svc.searchDevice(300)
-        if not devices:
-            raise RuntimeError("No device found")
-        conn_info = connect_pb2.ConnectInfo(
-            IPAddr=devices[0].IPAddr, port=devices[0].port, useSSL=False
-        )
-        self.device_id = self.connect_svc.connect(conn_info)
+    def __init__(self):
+        self.base_url = f"https://{CONTROLLER_IP}/api"
+        self.headers = {
+            "Authorization": CONTROLLER_KEY,
+            "Content-Type": "application/json",
+        }
+        self.door_id = DOOR_ID
 
-    def unlock(self):
-        self.door_svc.unlock(self.device_id, [1], door_pb2.OPERATOR)
-        print("🔓 Gate unlocked")
+    def _call_api(self, endpoint, action):
+        url = f"{self.base_url}/doors/{endpoint}"
+        payload = {"DoorCollection": {"rows": [{"id": self.door_id}]}}
+        response = requests.post(
+            url, json=payload, headers=self.headers, verify=False
+        )
+        if response.ok:
+            print(f"{action} completed")
+        else:
+            print(f"Error during {action}: {response.text}")
 
     def lock(self):
-        self.door_svc.lock(self.device_id, [1], door_pb2.OPERATOR)
-        print("🔒 Gate locked")
+        self._call_api("lock", "🔒 Lock")
+
+    def unlock(self):
+        self._call_api("unlock", "🔓 Unlock")
