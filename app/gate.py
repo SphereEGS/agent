@@ -22,8 +22,8 @@ class GateControl:
         else:
             print(f"Error during {action}: {response.text}")
 
-    def open(self):
-        self._call_api("open", "🔒 Open")
+    def lock(self):
+        self._call_api("lock", "🔒 Lock")
 
-    # def unlock(self):
-    #     self._call_api("unlock", "🔓 Unlock")
+    def unlock(self):
+        self._call_api("unlock", "🔓 Unlock")

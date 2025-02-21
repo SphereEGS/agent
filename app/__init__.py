@@ -78,7 +78,7 @@ class SpherexAgent:
         try:
             cropped_plate = self.plate_detector.detect_and_crop_plate(frame)
             if cropped_plate is None:
-                # self.gate.lock()
+                self.gate.lock()
                 self.is_logged = False
                 self.failed_attempts = 0
                 self.display_status(
@@ -89,7 +89,7 @@ class SpherexAgent:
 
             license_text = self.plate_detector.recognize_plate(cropped_plate)
             if not license_text:
-                # self.gate.lock()
+                self.gate.lock()
                 self.is_logged = False
                 self.failed_attempts = 0
                 self.display_status(
@@ -111,7 +111,7 @@ class SpherexAgent:
                 f"🔑 Authorization: {auth_status}\n"
             )
             if is_authorized:
-                self.gate.open()
+                self.gate.lock()
                 self.failed_attempts = 0
                 self.is_logged = False
                 self.display_status(
@@ -122,7 +122,7 @@ class SpherexAgent:
                 sleep(1)
             else:
                 self.failed_attempts += 1
-                # self.gate.lock()
+                self.gate.lock()
                 if self.failed_attempts >= 3 and not self.is_logged:
                     self.log_gate_entry(license_text, frame, 0)
                     self.is_logged = True
