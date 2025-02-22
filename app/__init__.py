@@ -55,7 +55,7 @@ class SpherexAgent:
             with open(temp_file, "rb") as image_file:
                 files = {"file": image_file}
                 upload_response = requests.post(
-                    f"{API_BASE_URL}/method/spherex.api.upload_file",
+                    f"{API_BASE_URL}/api/method/spherex.api.upload_file",
                     files=files,
                 )
                 log_data["image"] = upload_response.json()["message"][
@@ -63,7 +63,7 @@ class SpherexAgent:
                 ]
 
             requests.post(
-                f"{API_BASE_URL}/resource/Gate Entry Log",
+                f"{API_BASE_URL}/api/resource/Gate Entry Log",
                 data=log_data,
             )
         except Exception as e:

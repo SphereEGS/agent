@@ -22,7 +22,7 @@ class SyncManager:
     def _update_allowed_plates(self):
         try:
             response = requests.get(
-                f"{API_BASE_URL}/method/spherex.api.license_plate.get_authorized_plates",
+                f"{API_BASE_URL}/api/method/spherex.api.license_plate.get_authorized_plates",
                 params={"zone": ZONE},
             )
             if response.status_code == 200:
