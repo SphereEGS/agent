@@ -28,15 +28,25 @@ class CameraStream:
                 except queue.Empty:
                     pass
 
-            ret, frame = self.stream.read()
-            if not ret:
+            try:
+                ret, frame = self.stream.read()
+                if not ret:
+                    self.stopped = True
+                    print("❌ Failed to read frame from stream")
+                    self.release()
+                    return
+                self.queue.put(frame)
+            except cv2.error as e:
+                print(f"❌ OpenCV error: {e}")
+                self.release()
                 self.stopped = True
                 return
 
-            self.queue.put(frame)
-
     def read(self):
-        return self.queue.get()
+        try:
+            return self.queue.get(timeout=1)
+        except queue.Empty:
+            return None
 
     def stop(self):
         self.stopped = True
