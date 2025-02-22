@@ -87,7 +87,7 @@ class SpherexAgent:
                 )
                 return
 
-            license_text = self.plate_detector.recognize_plate(cropped_plate)
+            license_text = self.model.recognize_plate(cropped_plate)
             if not license_text:
                 self.is_logged = False
                 self.failed_attempts = 0
