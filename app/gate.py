@@ -34,7 +34,7 @@ class GateControl:
                     f"{self.base_url}/login",
                     json=payload,
                     verify=False,
-                    timeout=10,
+                    timeout=5,
                 )
                 response.raise_for_status()
                 session_id = response.headers.get("bs-session-id")
@@ -47,7 +47,7 @@ class GateControl:
                 logger.error(f"Login failed: {e}")
             except Exception as e:
                 logger.error(f"❌ Error rotating session id: {e}")
-            time.sleep(10)
+            time.sleep(600)
 
     def _call_api(self, endpoint, action):
         url = f"{self.base_url}/doors/{endpoint}"
