@@ -28,7 +28,7 @@ class SyncManager:
             if response.status_code == 200:
                 with self.lock:
                     self.allowed_plates = set(response.json()["message"])
-                    print(f"Updated allowed plates: {self.allowed_plates}")
+                    # print(f"Updated allowed plates: {self.allowed_plates}")
         except Exception as e:
             print(f"Error updating allowed plates: {e}")
 
