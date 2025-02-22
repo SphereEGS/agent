@@ -73,8 +73,8 @@ class SpherexAgent:
                 os.remove(temp_file)
 
     def display_status(self, message, timestamp):
-        print("\033[H", end="")
-        print("\033[J", end="")
+        # print("\033[H", end="")
+        # print("\033[J", end="")
         print(f"🕒 {timestamp}")
         print(f"\n{message}\n")
 
