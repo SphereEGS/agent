@@ -13,6 +13,7 @@ class GateControl:
     def __init__(self):
         self.base_url = f"https://{CONTROLLER_IP}/api"
         self.door_id = DOOR_ID
+        self.session_id = None
         self.lock = threading.Lock()
         self.login()
 
@@ -39,7 +40,7 @@ class GateControl:
                 session_id = response.headers.get("bs-session-id")
                 if session_id:
                     self.session_id = session_id
-                    logger.info("🔑 Session ID updated successfully.")
+                    logger.info(f"✅ Session id updated: {self.session_id}")
                 else:
                     logger.error("❌ Failed to update session id.")
             except requests.exceptions.RequestException as e:

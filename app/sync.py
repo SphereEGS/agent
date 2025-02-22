@@ -30,9 +30,6 @@ class SyncManager:
             if response.status_code == 200:
                 with self.lock:
                     self.allowed_plates = set(response.json()["message"])
-                    logger.info(
-                        f"Updated allowed plates: {self.allowed_plates}"
-                    )
             else:
                 logger.error(
                     f"Error updating allowed plates: {response.status_code}"
