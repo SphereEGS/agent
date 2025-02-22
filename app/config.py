@@ -9,7 +9,7 @@ logging.basicConfig(
     format="%(message)s",
     handlers=[
         # logging.StreamHandler(),
-        logging.FileHandler("app.log", mode="w"),
+        logging.FileHandler("app.log", mode="w", encoding='utf-8'),
     ],
 )
 logger = logging.getLogger(__name__)
