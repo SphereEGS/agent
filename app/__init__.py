@@ -17,9 +17,8 @@ class SpherexAgent:
         self.camera = None
         self.failed_attempts = 0
         self.gate = GateControl()
-        self.plate_detector = PlateDetector()
-        self.plate_cache = SyncManager()
-        self.plate_cache.start()
+        self.model = PlateDetector()
+        self.cache = SyncManager()
         self.is_logged = False
 
     def connect_to_stream(self):
@@ -41,9 +40,7 @@ class SpherexAgent:
 
     def log_gate_entry(self, plate, frame, is_authorized):
         try:
-            frame_with_text = self.plate_detector.add_text_to_image(
-                frame, plate
-            )
+            frame_with_text = self.model.add_text_to_image(frame, plate)
             temp_file = "gate_entry.jpg"
             cv2.imwrite(temp_file, frame_with_text)
 
@@ -80,7 +77,7 @@ class SpherexAgent:
 
     def process_frame(self, frame):
         try:
-            cropped_plate = self.plate_detector.detect_and_crop_plate(frame)
+            cropped_plate = self.model.detect_and_crop_plate(frame)
             if cropped_plate is None:
                 self.is_logged = False
                 self.failed_attempts = 0
@@ -100,7 +97,7 @@ class SpherexAgent:
                 )
                 return
 
-            is_authorized = self.plate_cache.is_authorized(license_text)
+            is_authorized = self.cache.is_authorized(license_text)
             auth_status = (
                 "✅ Authorized"
                 if is_authorized

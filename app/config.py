@@ -8,21 +8,21 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
     handlers=[
-        # logging.StreamHandler(),
-        logging.FileHandler("app.log", mode="w", encoding='utf-8'),
+        logging.FileHandler("app.log", mode="w", encoding="utf-8"),
     ],
 )
 logger = logging.getLogger(__name__)
 ZONE = os.getenv("ZONE", "default_zone")
 CAMERA_URL = os.getenv("CAMERA_URL", "http://default/camera")
 API_BASE_URL = os.getenv(
-    "API_BASE_URL", "https://dev-backend.spherex.eglobalsphere.com/api"
+    "API_BASE_URL", "https://dev-backend.spherex.eglobalsphere.com"
 )
 FONT_PATH = os.getenv("FONT_PATH", "fonts/DejaVuSans.ttf")
 MODEL_PATH = os.getenv("MODEL_PATH", "models/license_yolo8s_1024.pt")
 UPDATE_INTERVAL = 10
 CONTROLLER_IP = os.getenv("CONTROLLER_IP", "127.0.0.1")
-CONTROLLER_KEY = os.getenv("CONTROLLER_KEY", "CONTROLLER_KEY")
+CONTROLLER_USER = os.getenv("CONTROLLER_USER", "test")
+CONTROLLER_PASSWORD = os.getenv("CONTROLLER_PASSWORD", "E512512A")
 DOOR_ID = os.getenv("DOOR_ID", 1)
 ARABIC_MAPPING = {
     "0": "٠",

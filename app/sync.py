@@ -10,6 +10,7 @@ class SyncManager:
     def __init__(self):
         self.allowed_plates = set()
         self.lock = Lock()
+        self.start()
 
     def start(self):
         Thread(target=self._update_loop, daemon=True).start()
