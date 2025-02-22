@@ -106,7 +106,7 @@ class SpherexAgent:
             auth_status = (
                 "✅ Authorized"
                 if is_authorized
-                else "❌ Not Authorized (Failed Attempts)"
+                else "❌ Not Authorized"
                 + (" [Logged]" if self.is_logged else "")
             )
             status_message = (
