@@ -1,6 +1,7 @@
 import requests
 import urllib3
-from app.config import CONTROLLER_IP, CONTROLLER_KEY, DOOR_ID
+
+from app.config import CONTROLLER_IP, CONTROLLER_KEY, DOOR_ID, logger
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -27,9 +28,9 @@ class GateControl:
             url, json=payload, headers=self.headers, verify=False
         )
         if response.ok:
-            print(f"{action} completed")
+            logger.info(f"{action} completed")
         else:
-            print(f"Error during {action}: {response.text}")
+            logger.error(f"Error during {action}: {response.text}")
 
     def open(self):
         self._call_api("open", "🚪 Open")

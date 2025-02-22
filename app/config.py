@@ -1,9 +1,18 @@
+import logging
 import os
 
 from dotenv import load_dotenv
 
 load_dotenv()
-
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    handlers=[
+        # logging.StreamHandler(),
+        logging.FileHandler("app.log", mode="w"),
+    ],
+)
+logger = logging.getLogger(__name__)
 ZONE = os.getenv("ZONE", "default_zone")
 CAMERA_URL = os.getenv("CAMERA_URL", "http://default/camera")
 API_BASE_URL = os.getenv(

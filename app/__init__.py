@@ -1,13 +1,15 @@
 import os
 from datetime import datetime
-import requests
+from time import sleep
+
 import cv2
+import requests
+
 from .camera import CameraStream
-from .config import CAMERA_URL, ZONE, API_BASE_URL
+from .config import API_BASE_URL, CAMERA_URL, ZONE, logger
+from .gate import GateControl
 from .model import PlateDetector
 from .sync import SyncManager
-from .gate import GateControl
-from time import sleep
 
 
 class SpherexAgent:
@@ -22,16 +24,16 @@ class SpherexAgent:
 
     def connect_to_stream(self):
         try:
-            print(f"🔗 Connecting to Camera Stream: {CAMERA_URL}")
+            logger.info(f"🔗 Connecting to Camera Stream: {CAMERA_URL}")
             self.camera = CameraStream(CAMERA_URL)
             self.camera.start()
 
             if self.camera.isOpened():
-                print("✅ Connection successful")
+                logger.info("✅ Connection successful")
                 return True
 
         except Exception as e:
-            print(f"❌ Connection failed: {str(e)}")
+            logger.error(f"❌ Connection failed: {str(e)}")
             if self.camera:
                 self.camera.release()
 
@@ -67,22 +69,19 @@ class SpherexAgent:
                 data=log_data,
             )
         except Exception as e:
-            print(f"❌ Error logging entry: {e}")
+            logger.error(f"❌ Error logging entry: {e}")
         finally:
             if os.path.exists(temp_file):
                 os.remove(temp_file)
 
     def display_status(self, message, timestamp):
-        # print("\033[H", end="")
-        # print("\033[J", end="")
-        print(f"🕒 {timestamp}")
-        print(f"\n{message}\n")
+        logger.info(f"🕒 {timestamp}")
+        logger.info(f"\n{message}\n")
 
     def process_frame(self, frame):
         try:
             cropped_plate = self.plate_detector.detect_and_crop_plate(frame)
             if cropped_plate is None:
-                # self.gate.lock()
                 self.is_logged = False
                 self.failed_attempts = 0
                 self.display_status(
@@ -93,7 +92,6 @@ class SpherexAgent:
 
             license_text = self.plate_detector.recognize_plate(cropped_plate)
             if not license_text:
-                # self.gate.lock()
                 self.is_logged = False
                 self.failed_attempts = 0
                 self.display_status(
@@ -126,7 +124,6 @@ class SpherexAgent:
                 sleep(1)
             else:
                 self.failed_attempts += 1
-                # self.gate.lock()
                 if self.failed_attempts >= 3 and not self.is_logged:
                     self.log_gate_entry(license_text, frame, 0)
                     self.is_logged = True
@@ -137,7 +134,7 @@ class SpherexAgent:
                 )
 
         except Exception as e:
-            print(f"❌ Error processing frame: {str(e)}")
+            logger.error(f"❌ Error processing frame: {str(e)}")
 
     def start_processing(self):
         """Main processing loop"""
@@ -145,8 +142,8 @@ class SpherexAgent:
             if not self.connect_to_stream():
                 raise Exception("Failed to connect to Camera Stream")
 
-            print("🎥 Starting license plate detection...\n")
-            print("Press Ctrl+C to stop the program\n")
+            logger.info("🎥 Starting license plate detection...\n")
+            logger.info("Press Ctrl+C to stop the program\n")
 
             while True:
                 if not self.camera.isOpened():
@@ -162,10 +159,10 @@ class SpherexAgent:
                 self.process_frame(frame)
 
         except KeyboardInterrupt:
-            print("\n👋 Stopping license plate detection...")
+            logger.info("\n👋 Stopping license plate detection...")
         except Exception as e:
-            print(f"\n❌ An error occurred: {str(e)}")
+            logger.error(f"\n❌ An error occurred: {str(e)}")
         finally:
             if self.camera:
                 self.camera.release()
-                print("✅ Released video capture resources")
+                logger.info("✅ Released video capture resources")

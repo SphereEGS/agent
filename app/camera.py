@@ -3,6 +3,8 @@ from threading import Thread
 
 import cv2
 
+from app.config import logger
+
 
 class CameraStream:
     def __init__(self, src):
@@ -32,12 +34,12 @@ class CameraStream:
                 ret, frame = self.stream.read()
                 if not ret:
                     self.stopped = True
-                    print("❌ Failed to read frame from stream")
+                    logger.error("❌ Failed to read frame from stream")
                     self.release()
                     return
                 self.queue.put(frame)
             except cv2.error as e:
-                print(f"❌ OpenCV error: {e}")
+                logger.error(f"❌ OpenCV error: {e}")
                 self.release()
                 self.stopped = True
                 return

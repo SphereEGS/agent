@@ -1,11 +1,13 @@
-import cv2
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
-from ultralytics import YOLO
-from huggingface_hub import snapshot_download
 import os
 import shutil
-from app.config import MODEL_PATH, FONT_PATH, ARABIC_MAPPING
+
+import cv2
+import numpy as np
+from huggingface_hub import snapshot_download
+from PIL import Image, ImageDraw, ImageFont
+from ultralytics import YOLO
+
+from app.config import ARABIC_MAPPING, FONT_PATH, MODEL_PATH, logger
 
 
 class PlateDetector:
@@ -13,11 +15,11 @@ class PlateDetector:
         os.makedirs("models", exist_ok=True)
 
         if not os.path.exists(MODEL_PATH):
-            print("Downloading model for the first time...")
+            logger.info("Downloading model for the first time...")
             model_dir = snapshot_download("omarelsayeed/licence_plates")
             source_model = os.path.join(model_dir, "license_yolo8s_1024.pt")
             shutil.copy2(source_model, MODEL_PATH)
-            print("Model downloaded successfully")
+            logger.info("Model downloaded successfully")
 
         self.model = YOLO(MODEL_PATH)
         self.font_path = FONT_PATH
@@ -82,7 +84,11 @@ class PlateDetector:
         ]
 
         license_text = "".join(
-            [ARABIC_MAPPING.get(c, c) for c in unmapped_chars if c in ARABIC_MAPPING]
+            [
+                ARABIC_MAPPING.get(c, c)
+                for c in unmapped_chars
+                if c in ARABIC_MAPPING
+            ]
         )
         return "".join(license_text) if license_text else None
 
@@ -126,5 +132,5 @@ class PlateDetector:
             return cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
 
         except Exception as e:
-            print(f"Warning: Could not add text to image: {str(e)}")
+            logger.warning(f"Warning: Could not add text to image: {str(e)}")
             return image

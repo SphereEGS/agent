@@ -3,7 +3,7 @@ from threading import Lock, Thread
 
 import requests
 
-from app.config import API_BASE_URL, UPDATE_INTERVAL, ZONE
+from app.config import API_BASE_URL, UPDATE_INTERVAL, ZONE, logger
 
 
 class SyncManager:
@@ -21,6 +21,7 @@ class SyncManager:
 
     def _update_allowed_plates(self):
         try:
+            logger.info("Updating allowed plates")
             response = requests.get(
                 f"{API_BASE_URL}/api/method/spherex.api.license_plate.get_authorized_plates",
                 params={"zone": ZONE},
@@ -28,9 +29,15 @@ class SyncManager:
             if response.status_code == 200:
                 with self.lock:
                     self.allowed_plates = set(response.json()["message"])
-                    # print(f"Updated allowed plates: {self.allowed_plates}")
+                    logger.info(
+                        f"Updated allowed plates: {self.allowed_plates}"
+                    )
+            else:
+                logger.error(
+                    f"Error updating allowed plates: {response.status_code}"
+                )
         except Exception as e:
-            print(f"Error updating allowed plates: {e}")
+            logger.error(f"Error updating allowed plates: {e}")
 
     def is_authorized(self, plate):
         with self.lock:
