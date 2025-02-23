@@ -8,3 +8,4 @@ controller
 *.log
 __pycache__
 *.pyc
+*.pid
