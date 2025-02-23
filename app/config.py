@@ -19,7 +19,7 @@ API_BASE_URL = os.getenv(
 )
 FONT_PATH = os.getenv("FONT_PATH", "fonts/DejaVuSans.ttf")
 MODEL_PATH = os.getenv("MODEL_PATH", "models/license_yolo8s_1024.pt")
-UPDATE_INTERVAL = 10
+UPDATE_INTERVAL = 600
 CONTROLLER_IP = os.getenv("CONTROLLER_IP", "127.0.0.1")
 CONTROLLER_USER = os.getenv("CONTROLLER_USER", "test")
 CONTROLLER_PASSWORD = os.getenv("CONTROLLER_PASSWORD", "E512512A")
