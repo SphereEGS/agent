@@ -41,6 +41,7 @@ class SpherexAgent:
     def log_gate_entry(self, plate, frame, is_authorized):
         try:
             frame_with_text = self.model.add_text_to_image(frame, plate)
+            frame_with_roi = self.model.visualize_roi(frame, frame_with_text)
             temp_file = "gate_entry.jpg"
             cv2.imwrite(temp_file, frame_with_text)
 
