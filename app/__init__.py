@@ -122,7 +122,7 @@ class SpherexAgent:
                 sleep(1)
             else:
                 self.failed_attempts += 1
-                if self.failed_attempts >= 3 and not self.is_logged:
+                if self.failed_attempts >= 2 and not self.is_logged:
                     self.log_gate_entry(license_text, frame, 0)
                     self.is_logged = True
 
