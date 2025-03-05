@@ -43,7 +43,7 @@ class SpherexAgent:
             frame_with_text = self.model.add_text_to_image(frame, plate)
             frame_with_roi = self.model.visualize_roi(frame, frame_with_text)
             temp_file = "gate_entry.jpg"
-            cv2.imwrite(temp_file, frame_with_text)
+            cv2.imwrite(temp_file, frame_with_roi)
 
             log_data = {
                 "zone": ZONE,
@@ -122,7 +122,7 @@ class SpherexAgent:
                 sleep(1)
             else:
                 self.failed_attempts += 1
-                if self.failed_attempts >= 2 and not self.is_logged:
+                if self.failed_attempts >= 1 and not self.is_logged:
                     self.log_gate_entry(license_text, frame, 0)
                     self.is_logged = True
 
