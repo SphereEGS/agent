@@ -92,8 +92,13 @@ class PlateDetector:
             results[0].boxes.xyxy, results[0].boxes.cls, results[0].boxes.conf
         ):
             if self.model.names[int(cls)] == "License Plate":
-                plate_boxes.append(box.cpu().numpy())
-                plate_scores.append(float(conf))
+                x1, y1, x2, y2 = box.cpu().numpy()
+                center_x = (x1 + x2) / 2
+                center_y = (y1 + y2) / 2
+
+                if self._is_point_inside_roi((center_x, center_y)):
+                    plate_boxes.append(box.cpu().numpy())
+                    plate_scores.append(float(conf))
 
         if not plate_boxes:
             return None
