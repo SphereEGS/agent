@@ -38,11 +38,8 @@ class PlateDetector:
             with open(config_path, "r") as f:
                 config_data = json.load(f)
 
-            # Check if config data is a list of points
             if isinstance(config_data, list) and len(config_data) >= 3:
-                # Convert to numpy array and reshape if needed
                 roi_polygon = np.array(config_data, dtype=np.int32)
-                # Ensure shape is correct for pointPolygonTest
                 if len(roi_polygon.shape) == 2 and roi_polygon.shape[1] == 2:
                     logger.info(
                         f"Valid ROI polygon loaded with {len(roi_polygon)} points"
@@ -71,31 +68,16 @@ class PlateDetector:
         if self.roi_polygon is None:
             return True
 
-        # Make sure point is a tuple of two integers
         point = (int(point[0]), int(point[1]))
 
         try:
-            # pointPolygonTest returns positive for inside, negative for outside, 0 for on the boundary
             result = cv2.pointPolygonTest(self.roi_polygon, point, False)
             return result >= 0
         except Exception as e:
             logger.error(
                 f"Error checking if point {point} is in ROI: {str(e)}"
             )
-            # Return True as a fallback to not block detections
             return True
-
-    def _is_box_inside_roi(self, box):
-        """Check if a bounding box is inside or overlaps with the ROI polygon.
-        This is more strict than just checking the center point."""
-        if self.roi_polygon is None:
-            return True
-
-        x1, y1, x2, y2 = map(int, box)
-
-        # Check all four corners of the box
-        corners = [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
-        return any(self._is_point_inside_roi(corner) for corner in corners)
 
     def detect_and_crop_plate(self, image):
         results = self.model.predict(
@@ -110,8 +92,13 @@ class PlateDetector:
             results[0].boxes.xyxy, results[0].boxes.cls, results[0].boxes.conf
         ):
             if self.model.names[int(cls)] == "License Plate":
-                plate_boxes.append(box.cpu().numpy())
-                plate_scores.append(float(conf))
+                x1, y1, x2, y2 = box.cpu().numpy()
+                center_x = (x1 + x2) / 2
+                center_y = (y1 + y2) / 2
+
+                if self._is_point_inside_roi((center_x, center_y)):
+                    plate_boxes.append(box.cpu().numpy())
+                    plate_scores.append(float(conf))
 
         if not plate_boxes:
             return None

@@ -13,17 +13,19 @@ if not cap.isOpened():
     print("Error: Unable to open RTSP stream.")
     exit(1)
 
-ret, frame = cap.read()
+ret, original_frame = cap.read()
 cap.release()
 
 if not ret:
     print("Error: Could not read frame from the stream.")
     exit(1)
 
-# Resize frame to fit desired window width while preserving aspect ratio.
-target_width = 800  # adjust as needed
-scale_ratio = target_width / frame.shape[1]
-frame = cv2.resize(frame, (target_width, int(frame.shape[0] * scale_ratio)))
+original_width = original_frame.shape[1]
+original_height = original_frame.shape[0]
+
+target_width = 800
+scale_ratio = target_width / original_frame.shape[1]
+display_frame = cv2.resize(original_frame, (target_width, int(original_frame.shape[0] * scale_ratio)))
 
 polygon_points = []
 polygon_finished = False
@@ -46,9 +48,10 @@ print("Instructions:")
 print("  - Left-click to add polygon points.")
 print("  - Right-click to complete the polygon (minimum 3 points).")
 print("  - Press 'Esc' to exit without saving.")
+print(f"Original frame: {original_width}x{original_height}, Display frame: {display_frame.shape[1]}x{display_frame.shape[0]}")
 
 while True:
-    frame_display = frame.copy()
+    frame_display = display_frame.copy()
 
     if polygon_points:
         for pt in polygon_points:
@@ -64,9 +67,16 @@ while True:
         print("Exiting without saving ROI.")
         break
     if polygon_finished:
+        original_polygon_points = []
+        for x, y in polygon_points:
+            original_x = int(x / scale_ratio)
+            original_y = int(y / scale_ratio)
+            original_polygon_points.append((original_x, original_y))
+        
         with open("config.json", "w") as f:
-            json.dump(polygon_points, f)
-        print("Polygon saved to config.json:", polygon_points)
+            json.dump(original_polygon_points, f)
+        print("Display polygon points:", polygon_points)
+        print("Original polygon points saved to config.json:", original_polygon_points)
         cv2.waitKey(500)
         break
 
