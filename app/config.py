@@ -7,9 +7,9 @@ load_dotenv()
 logging.basicConfig(
     level=logging.INFO,
     format="%(message)s",
-    # handlers=[
-    #     logging.FileHandler("app.log", mode="w", encoding="utf-8"),
-    # ],
+    handlers=[
+        logging.FileHandler("app.log", mode="w", encoding="utf-8"),
+    ],
 )
 logger = logging.getLogger(__name__)
 ZONE = os.getenv("ZONE", "default_zone")
