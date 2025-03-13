@@ -171,14 +171,17 @@ EOL
 if [ -f "run.sh" ]; then
     echo "Making run.sh executable..."
     chmod +x run.sh
+    bash run.sh
 else
     echo "Creating basic run.sh file..."
     cat > run.sh << EOL
 #!/bin/bash
-source venv/bin/activate
-python main.py
+python main.py > /dev/null 2>&1 &
+echo $! > app.pid
+tail -f app.log | awk '{lines[NR%10] = $0} NR>=10 {system("clear"); for (i=NR%10+1; i<=NR%10+10; i++) print lines[i%10]}'
 EOL
     chmod +x run.sh
+    bash run.sh
 fi
 
 # Final network connectivity check (optional, since we already validated)
