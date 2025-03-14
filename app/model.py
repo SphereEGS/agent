@@ -12,7 +12,7 @@ from app.config import ARABIC_MAPPING, FONT_PATH, MODEL_PATH, logger
 
 
 class PlateDetector:
-    def __init__(self):
+    def __init__(self, roi_config=None):
         os.makedirs("models", exist_ok=True)
 
         if not os.path.exists(MODEL_PATH):
@@ -24,17 +24,21 @@ class PlateDetector:
 
         self.model = YOLO(MODEL_PATH)
         self.font_path = FONT_PATH
-        self.roi_polygon = self._load_roi_polygon("config.json")
+        self.roi_polygon = self._load_roi_polygon(roi_config) if roi_config else None
 
         if self.roi_polygon is not None:
             logger.info(
-                f"ROI polygon loaded successfully with {len(self.roi_polygon)} points"
+                f"ROI polygon loaded successfully with {len(self.roi_polygon)} points from {roi_config}"
             )
             logger.info(f"ROI polygon points: {self.roi_polygon.tolist()}")
 
     def _load_roi_polygon(self, config_path):
         """Load ROI polygon from config.json."""
         try:
+            if not os.path.exists(config_path):
+                logger.warning(f"ROI config file not found: {config_path}")
+                return None
+                
             with open(config_path, "r") as f:
                 config_data = json.load(f)
 
@@ -42,16 +46,16 @@ class PlateDetector:
                 roi_polygon = np.array(config_data, dtype=np.int32)
                 if len(roi_polygon.shape) == 2 and roi_polygon.shape[1] == 2:
                     logger.info(
-                        f"Valid ROI polygon loaded with {len(roi_polygon)} points"
+                        f"Valid ROI polygon loaded with {len(roi_polygon)} points from {config_path}"
                     )
                     return roi_polygon
                 else:
                     logger.error(
-                        f"Invalid ROI polygon shape: {roi_polygon.shape}"
+                        f"Invalid ROI polygon shape in {config_path}: {roi_polygon.shape}"
                     )
                     return None
             else:
-                logger.error(f"Invalid ROI format in config: {config_data}")
+                logger.error(f"Invalid ROI format in config {config_path}: {config_data}")
                 return None
         except FileNotFoundError:
             logger.warning(f"ROI config file not found: {config_path}")
@@ -60,7 +64,7 @@ class PlateDetector:
             logger.error(f"Invalid JSON format in: {config_path}")
             return None
         except Exception as e:
-            logger.error(f"Error loading ROI polygon: {str(e)}")
+            logger.error(f"Error loading ROI polygon from {config_path}: {str(e)}")
             return None
 
     def _is_point_inside_roi(self, point):

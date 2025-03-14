@@ -7,7 +7,8 @@ from app.config import logger
 
 
 class CameraStream:
-    def __init__(self, src):
+    def __init__(self, src, camera_id="default"):
+        self.camera_id = camera_id
         self.stream = cv2.VideoCapture(src, cv2.CAP_FFMPEG)
         self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self.stream.set(cv2.CAP_PROP_FPS, 30)
@@ -34,12 +35,14 @@ class CameraStream:
                 ret, frame = self.stream.read()
                 if not ret:
                     self.stopped = True
-                    logger.error("❌ Failed to read frame from stream")
+                    logger.error(
+                        f"❌ Failed to read frame from {self.camera_id} stream"
+                    )
                     self.release()
                     return
                 self.queue.put(frame)
             except cv2.error as e:
-                logger.error(f"❌ OpenCV error: {e}")
+                logger.error(f"❌ OpenCV error for {self.camera_id}: {e}")
                 self.release()
                 self.stopped = True
                 return
