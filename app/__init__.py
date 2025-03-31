@@ -7,7 +7,7 @@ import cv2
 import requests
 
 from .camera import CameraStream
-from .config import API_BASE_URL, CAMERAS, ZONE, logger
+from .config import BACKEND_URL, CAMERAS, GATE, logger
 from .gate import GateControl
 from .model import PlateDetector
 from .sync import SyncManager
@@ -147,7 +147,7 @@ class GateProcessor:
             cv2.imwrite(temp_file, frame_with_roi)
 
             log_data = {
-                "zone": ZONE,
+                "gate": GATE,
                 "license_plate": plate,
                 "authorized": is_authorized,
                 "gate_type": self.gate_type,
@@ -157,7 +157,7 @@ class GateProcessor:
             with open(temp_file, "rb") as image_file:
                 files = {"file": image_file}
                 upload_response = requests.post(
-                    f"{API_BASE_URL}/api/method/spherex.api.upload_file",
+                    f"{BACKEND_URL}/api/method/spherex.api.upload_file",
                     files=files,
                 )
                 log_data["image"] = upload_response.json()["message"][
@@ -165,7 +165,7 @@ class GateProcessor:
                 ]
 
             requests.post(
-                f"{API_BASE_URL}/api/resource/Gate Entry Log",
+                f"{BACKEND_URL}/api/resource/Gate Entry Log",
                 data=log_data,
             )
         except Exception as e:

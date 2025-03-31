@@ -19,7 +19,7 @@ class GateControl:
         self.enabled = True
         controller = CONTROLLERS[gate_type]
         self.base_url = f"https://{controller['ip']}/api"
-        self.door_id = controller["door_id"]
+        self.CONTROLLER_GATE = controller["CONTROLLER_GATE"]
         self.username = controller["user"]
         self.password = controller["password"]
         self.session_id = None
@@ -72,7 +72,7 @@ class GateControl:
         payload = {
             "DoorCollection": {
                 "total": 1,
-                "rows": [{"id": self.door_id}],
+                "rows": [{"id": self.CONTROLLER_GATE}],
             }
         }
 
