@@ -1,4 +1,5 @@
 from app import SpherexAgent
 
-app = SpherexAgent()
-app.start_processing()
+if __name__ == "__main__":
+    app = SpherexAgent()
+    app.start()

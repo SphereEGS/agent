@@ -3,31 +3,45 @@ import urllib3
 import time
 import threading
 
-from app.config import CONTROLLER_IP, DOOR_ID, logger
-from app.config import CONTROLLER_USER, CONTROLLER_PASSWORD
+from app.config import CONTROLLERS, logger
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class GateControl:
-    def __init__(self):
-        self.base_url = f"https://{CONTROLLER_IP}/api"
-        self.door_id = DOOR_ID
+    def __init__(self, gate_type="entry"):
+        self.gate_type = gate_type
+        if gate_type not in CONTROLLERS or not CONTROLLERS[gate_type]["ip"]:
+            logger.warning(f"No controller configuration for {gate_type}. Gate control disabled.")
+            self.enabled = False
+            return
+            
+        self.enabled = True
+        controller = CONTROLLERS[gate_type]
+        self.base_url = f"https://{controller['ip']}/api"
+        self.door_id = controller["door_id"]
+        self.username = controller["user"]
+        self.password = controller["password"]
         self.session_id = None
         self.lock = threading.Lock()
         self.login()
 
     def login(self):
+        if not self.enabled:
+            return
         threading.Thread(target=self._login, daemon=True).start()
 
     def _login(self):
         while True:
-            logger.info("🔑 Rotating session id")
+            if not self.enabled:
+                return
+                
+            logger.info(f"🔑 Rotating session id for {self.gate_type} gate")
             try:
                 payload = {
                     "User": {
-                        "login_id": CONTROLLER_USER,
-                        "password": CONTROLLER_PASSWORD,
+                        "login_id": self.username,
+                        "password": self.password,
                     }
                 }
                 response = requests.post(
@@ -40,16 +54,20 @@ class GateControl:
                 session_id = response.headers.get("bs-session-id")
                 if session_id:
                     self.session_id = session_id
-                    logger.info(f"✅ Session id updated: {self.session_id}")
+                    logger.info(f"✅ Session id updated for {self.gate_type}: {self.session_id}")
                 else:
-                    logger.error("❌ Failed to update session id.")
+                    logger.error(f"❌ Failed to update session id for {self.gate_type}.")
             except requests.exceptions.RequestException as e:
-                logger.error(f"Login failed: {e}")
+                logger.error(f"Login failed for {self.gate_type}: {e}")
             except Exception as e:
-                logger.error(f"❌ Error rotating session id: {e}")
+                logger.error(f"❌ Error rotating session id for {self.gate_type}: {e}")
             time.sleep(600)
 
     def _call_api(self, endpoint, action):
+        if not self.enabled:
+            logger.info(f"{action} skipped - {self.gate_type} gate control disabled")
+            return
+            
         url = f"{self.base_url}/doors/{endpoint}"
         payload = {
             "DoorCollection": {
@@ -63,15 +81,15 @@ class GateControl:
             "bs-session-id": self.session_id,
             "Content-Type": "application/json",
         }
-        logger.info(f"{action} door")
+        logger.info(f"{action} {self.gate_type} door")
         logger.info(f"Headers: {headers}")
         response = requests.post(
             url, json=payload, headers=headers, verify=False
         )
         if response.ok:
-            logger.info(f"{action} completed")
+            logger.info(f"{action} completed for {self.gate_type}")
         else:
-            logger.error(f"Error during {action}: {response.text}")
+            logger.error(f"Error during {action} for {self.gate_type}: {response.text}")
 
     def open(self):
         self._call_api("open", "🚪 Open")

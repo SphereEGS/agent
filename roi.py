@@ -4,20 +4,49 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
-camera_url = os.getenv("CAMERA_URL")
-if not camera_url:
-    raise ValueError("CAMERA_URL environment variable is not set")
 
-cap = cv2.VideoCapture(camera_url)
-if not cap.isOpened():
-    print("Error: Unable to open RTSP stream.")
-    exit(1)
+# Get video source from environment variables or use default
+INPUT_SOURCE = os.getenv("INPUT_SOURCE", "camera")  # Changed default to camera
+CAMERA_URL = os.getenv("CAMERA_URL", "0")  # Default to local webcam
+VIDEO_PATH = os.getenv("VIDEO_PATH", "input/test_video3.mov")
 
+# Use appropriate source based on INPUT_SOURCE
+if INPUT_SOURCE == "video":
+    source_path = VIDEO_PATH
+    print(f"Using video file: {source_path}")
+    if not os.path.exists(source_path):
+        print(f"Error: Video file {source_path} not found.")
+        exit(1)
+else:
+    # Try CCTV first, fallback to local webcam if connection fails
+    source_path = CAMERA_URL
+    print(f"Attempting to connect to camera stream: {source_path}")
+    cap = cv2.VideoCapture(source_path)
+    
+    if not cap.isOpened():
+        print("CCTV connection failed, falling back to local webcam (index 0)")
+        source_path = 0
+        cap = cv2.VideoCapture(source_path)
+    
+    if not cap.isOpened():
+        print("Error: Unable to open any camera source")
+        exit(1)
+
+    print(f"Successfully connected to: {'CCTV' if source_path != 0 else 'Local Webcam'}")
+
+# Remove the duplicate VideoCapture since we already have it from above
+if INPUT_SOURCE == "video":
+    cap = cv2.VideoCapture(source_path)
+    if not cap.isOpened():
+        print(f"Error: Unable to open source: {source_path}")
+        exit(1)
+
+# Read a frame for ROI selection
 ret, original_frame = cap.read()
 cap.release()
 
 if not ret:
-    print("Error: Could not read frame from the stream.")
+    print("Error: Could not read frame from the source.")
     exit(1)
 
 original_width = original_frame.shape[1]
