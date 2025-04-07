@@ -2,44 +2,54 @@ import cv2
 import json
 from dotenv import load_dotenv
 import os
+import sys
 
 load_dotenv()
 
 # Get video source from environment variables or use default
-INPUT_SOURCE = os.getenv("INPUT_SOURCE", "camera")  # Changed default to camera
 CAMERA_URL = os.getenv("CAMERA_URL", "0")  # Default to local webcam
 VIDEO_PATH = os.getenv("VIDEO_PATH", "input/test_video3.mov")
 
-# Use appropriate source based on INPUT_SOURCE
-if INPUT_SOURCE == "video":
-    source_path = VIDEO_PATH
+# Clean any quotes from CAMERA_URL
+if isinstance(CAMERA_URL, str):
+    CAMERA_URL = CAMERA_URL.strip()
+    if CAMERA_URL.startswith('"') and CAMERA_URL.endswith('"'):
+        CAMERA_URL = CAMERA_URL[1:-1].strip()
+    if '#' in CAMERA_URL:
+        CAMERA_URL = CAMERA_URL.split('#')[0].strip()
+
+print(f"Camera URL: {CAMERA_URL}")
+
+# Use appropriate source based on CAMERA_URL
+if CAMERA_URL.lower().endswith(('.mp4', '.mov', '.avi')):
+    source_path = CAMERA_URL
     print(f"Using video file: {source_path}")
     if not os.path.exists(source_path):
         print(f"Error: Video file {source_path} not found.")
         exit(1)
+elif CAMERA_URL == "0" or CAMERA_URL.isdigit():
+    # Convert string to integer if needed for webcam
+    source_path = 0 if CAMERA_URL == "0" else int(CAMERA_URL)
+    print(f"Using webcam with index: {source_path}")
 else:
-    # Try CCTV first, fallback to local webcam if connection fails
+    # Assume RTSP or other camera URL
     source_path = CAMERA_URL
     print(f"Attempting to connect to camera stream: {source_path}")
+
+# Connect to the source
+cap = cv2.VideoCapture(source_path)
+
+if not cap.isOpened():
+    print(f"Failed to connect to: {source_path}")
+    print("Falling back to local webcam (index 0)")
+    source_path = 0
     cap = cv2.VideoCapture(source_path)
-    
-    if not cap.isOpened():
-        print("CCTV connection failed, falling back to local webcam (index 0)")
-        source_path = 0
-        cap = cv2.VideoCapture(source_path)
     
     if not cap.isOpened():
         print("Error: Unable to open any camera source")
         exit(1)
 
-    print(f"Successfully connected to: {'CCTV' if source_path != 0 else 'Local Webcam'}")
-
-# Remove the duplicate VideoCapture since we already have it from above
-if INPUT_SOURCE == "video":
-    cap = cv2.VideoCapture(source_path)
-    if not cap.isOpened():
-        print(f"Error: Unable to open source: {source_path}")
-        exit(1)
+print(f"Successfully connected to: {'CCTV/File' if source_path != 0 else 'Local Webcam'}")
 
 # Read a frame for ROI selection
 ret, original_frame = cap.read()
@@ -102,10 +112,12 @@ while True:
             original_y = int(y / scale_ratio)
             original_polygon_points.append((original_x, original_y))
         
-        with open("config.json", "w") as f:
+        # Save to roi_coordinates.json
+        save_path = "roi_coordinates.json"
+        with open(save_path, "w") as f:
             json.dump(original_polygon_points, f)
         print("Display polygon points:", polygon_points)
-        print("Original polygon points saved to config.json:", original_polygon_points)
+        print(f"Original polygon points saved to {save_path}:", original_polygon_points)
         cv2.waitKey(500)
         break
 

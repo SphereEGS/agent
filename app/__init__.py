@@ -3,10 +3,12 @@ import cv2
 import requests
 from datetime import datetime
 from time import sleep, time
+import threading
+import numpy as np
 
 # Direct imports (no package imports)
 from app.camera import InputStream  # Change to relative import
-from app.config import API_BASE_URL, ZONE, logger, INPUT_SOURCE, PROCESS_EVERY
+from app.config import API_BASE_URL, ZONE, logger, CAMERA_URL, PROCESS_EVERY
 from app.gate import GateControl
 from app.lpr_model import PlateProcessor
 from app.vehicle_tracking import VehicleTracker
@@ -29,7 +31,7 @@ class SpherexAgent:
 
     def initialize_stream(self):
         """Initialize the input stream (camera or video)"""
-        logger.info(f"[AGENT] Initializing input stream from source: {INPUT_SOURCE}")
+        logger.info(f"[AGENT] Initializing input stream from source: {CAMERA_URL}")
         try:
             self.stream = InputStream()
             logger.info(f"[AGENT] Input stream initialized successfully")
@@ -90,6 +92,10 @@ class SpherexAgent:
             if time_since_last > self.detection_cooldown:
                 logger.debug(f"[AGENT] Running detection on frame {self.frame_count}")
                 try:
+                    # Store the previous count of detected plates
+                    prev_plate_count = len(self.vehicle_tracker.detected_plates)
+                    prev_plates = set(self.vehicle_tracker.detected_plates.items())
+                    
                     # Detect vehicles and license plates
                     detected, vis_frame = self.vehicle_tracker.detect_vehicles(frame)
                     
@@ -97,29 +103,37 @@ class SpherexAgent:
                         # Use the visualization frame that comes from the tracker
                         display_frame = vis_frame
                         
-                        # Process detected license plates
-                        plates = self.vehicle_tracker.detected_plates
-                        logger.info(f"[AGENT] Detected {len(plates)} plates: {plates}")
+                        # Only log plate info if there's a change in detected plates
+                        curr_plates = set(self.vehicle_tracker.detected_plates.items())
+                        new_plates = curr_plates - prev_plates
                         
-                        for track_id, plate_text in plates.items():
-                            # Check if plate is authorized
-                            is_authorized = self.cache.is_authorized(plate_text)
-                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if new_plates:
+                            logger.info(f"[AGENT] Newly detected plates: {dict(new_plates)}")
                             
-                            # Log the detection
-                            auth_status = "Authorized" if is_authorized else "Not Authorized"
-                            logger.info(f"[AGENT] [{timestamp}] Vehicle {track_id} with plate: {plate_text} - {auth_status}")
-                            
-                            # Handle gate control
-                            if is_authorized:
-                                logger.info(f"[GATE] Opening gate for authorized plate: {plate_text}")
-                                self.gate.open()
-                                self.log_gate_entry(plate_text, frame, 1)
-                                self.last_detection_time = current_time
-                            else:
-                                logger.info(f"[GATE] Not opening gate for unauthorized plate: {plate_text}")
-                                self.log_gate_entry(plate_text, frame, 0)
-                                self.is_logged = True
+                            # Process newly detected plates
+                            for track_id, plate_text in new_plates:
+                                # Check if plate is authorized
+                                is_authorized = self.cache.is_authorized(plate_text)
+                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                
+                                # Log the detection
+                                auth_status = "Authorized" if is_authorized else "Not Authorized"
+                                logger.info(f"[AGENT] [{timestamp}] Vehicle {track_id} with plate: {plate_text} - {auth_status}")
+                                
+                                # Handle gate control
+                                if is_authorized:
+                                    logger.info(f"[GATE] Opening gate for authorized plate: {plate_text}")
+                                    self.gate.open()
+                                    self.log_gate_entry(plate_text, frame, 1)
+                                    self.last_detection_time = current_time
+                                else:
+                                    logger.info(f"[GATE] Not opening gate for unauthorized plate: {plate_text}")
+                                    self.log_gate_entry(plate_text, frame, 0)
+                                    self.is_logged = True
+                        elif self.frame_count % 200 == 0:
+                            # Log total plate count periodically
+                            plates = self.vehicle_tracker.detected_plates
+                            logger.info(f"[AGENT] Total plates detected: {len(plates)}")
                     elif vis_frame is not None:
                         # Even if no detection, use the visualization frame which should have ROI
                         display_frame = vis_frame
@@ -142,7 +156,7 @@ class SpherexAgent:
         # Allow quitting with 'q' key
         if key == ord('q'):
             logger.info("[AGENT] User pressed 'q', exiting")
-            self.stream.stop()
+            self.stream.release()
             cv2.destroyAllWindows()
             import sys
             sys.exit(0)
@@ -161,12 +175,15 @@ class SpherexAgent:
             frame_count = 0
             start_time = time()
             
-            while self.stream and self.stream.isOpened():
-                frame = self.stream.read()
+            while self.stream:
+                # Read frame and check if successful
+                ret, frame = self.stream.read()
                 
-                if frame is None:
-                    logger.warning("[AGENT] Failed to read frame. Stopping.")
-                    break
+                if not ret or frame is None:
+                    logger.warning("[AGENT] Failed to read frame, retrying...")
+                    # Wait a bit before retrying
+                    sleep(0.1)
+                    continue
                 
                 # Calculate FPS every 100 frames
                 frame_count += 1
@@ -180,7 +197,7 @@ class SpherexAgent:
                     
                 self.process_frame(frame)
                 
-                # Check for 'q' key press (must have a window open for this to work)
+                # Check for 'q' key press
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     logger.info("[AGENT] Stopping due to user input (q)...")
                     break
@@ -196,7 +213,7 @@ class SpherexAgent:
             logger.error("[AGENT] Stack trace: " + traceback.format_exc())
         finally:
             if self.stream:
-                self.stream.stop()
+                self.stream.release()
             cv2.destroyAllWindows()
             logger.info("[AGENT] Processing stopped.")
 

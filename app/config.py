@@ -2,46 +2,65 @@ import logging
 import os
 import sys
 from dotenv import load_dotenv
+from logging.handlers import RotatingFileHandler
 
-# Force reload of environment variables
-load_dotenv(override=True)
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[
-        logging.FileHandler("app.log", mode="w", encoding="utf-8"),
-        logging.StreamHandler(sys.stdout)
-    ],
-)
-logger = logging.getLogger(__name__)
+log_dir = "logs"
+os.makedirs(log_dir, exist_ok=True)
+log_file = os.path.join(log_dir, "app.log")
+
+# Create a custom logger
+logger = logging.getLogger("SpherexLogger")
+logger.setLevel(logging.DEBUG)
+
+# Create handlers
+console_handler = logging.StreamHandler(sys.stdout)
+file_handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5)
+console_handler.setLevel(logging.INFO)
+file_handler.setLevel(logging.DEBUG)
+
+# Create formatters and add to handlers
+log_format = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(log_format)
+file_handler.setFormatter(log_format)
+
+# Add handlers to the logger
+logger.addHandler(console_handler)
+logger.addHandler(file_handler)
 
 # Zone identification
-ZONE = os.getenv("ZONE", "default_zone")
+ZONE = os.getenv("ZONE", "A1")
 logger.info(f"Operating in zone: {ZONE}")
 
 # Camera input sources
 CAMERA_SOURCES = {
-    "cctv": os.getenv("CCTV_URL", "rtsp://192.168.0.3:8554/stream"),
-    "webcam": os.getenv("WEBCAM_INDEX", "0"),
-    "video_file": os.getenv("VIDEO_FILE", "input/test_video3.mov")
+    "cctv": "rtsp://192.168.0.3:8554/stream",  # Default CCTV stream
+    "webcam": "0",                             # Default webcam
+    "video_file": "input/test_video3.mov"      # Test video file
 }
 
 # Camera configuration - default to CCTV if no specific camera URL is set
-INPUT_SOURCE = os.getenv("CAMERA_URL", CAMERA_SOURCES["cctv"])
-ALLOW_FALLBACK = os.getenv("NO_FALLBACK", "false").lower() != "true"
+CAMERA_URL = os.getenv("CAMERA_URL", CAMERA_SOURCES["cctv"])  # Camera source from .env
+logger.info(f"Using camera source: {CAMERA_URL}")
+
+# Fallback configuration
+ALLOW_FALLBACK = os.getenv("ALLOW_FALLBACK", "false").lower() == "true"  # Parse string to boolean
+logger.info(f"Camera fallback enabled: {ALLOW_FALLBACK}")
+
 FRAME_WIDTH = int(os.getenv("FRAME_WIDTH", "1280"))
 FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", "720"))
-PROCESS_EVERY = int(os.getenv("PROCESS_EVERY", "3"))
+PROCESS_EVERY = int(os.getenv("PROCESS_EVERY", "4"))  # Process every Nth frame
 
 # API configuration
 API_BASE_URL = os.getenv("API_BASE_URL", "https://dev-backend.spherex.eglobalsphere.com/api")
 
 # File paths
-FONT_PATH = os.getenv("FONT_PATH", "fonts/DejaVuSans.ttf")
-LPR_MODEL_PATH = os.getenv("LPR_MODEL_PATH", "models/license_yolo8s_1024.pt")
-YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", os.path.join("models", "yolo11n.pt"))
+FONT_PATH = os.getenv("FONT_PATH", "fonts/NotoSansArabic-Regular.ttf")
+LPR_MODEL_PATH = os.getenv("LPR_MODEL_PATH", "models/license_plate_recognition.pt")
+YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "models/yolo11n.pt")
 
 # Update interval
 UPDATE_INTERVAL = int(os.getenv("UPDATE_INTERVAL", "600"))
@@ -73,16 +92,6 @@ DETECTION_CONF = float(os.getenv("DETECTION_CONF", "0.3"))
 DETECTION_IOU = float(os.getenv("DETECTION_IOU", "0.45"))
 TARGET_WIDTH = int(os.getenv("TARGET_WIDTH", "1280"))
 
-# Log configuration
-logger.info(f"Using camera source: {INPUT_SOURCE}")
-logger.info(f"Webcam fallback enabled: {ALLOW_FALLBACK}")
-logger.info(f"Configuration loaded:")
-logger.info(f"- ZONE: {ZONE}")
-logger.info(f"- INPUT_SOURCE: {INPUT_SOURCE}")
-logger.info(f"- PROCESS_EVERY: {PROCESS_EVERY} frames")
-logger.info(f"- Models: {os.path.basename(LPR_MODEL_PATH)}, {os.path.basename(YOLO_MODEL_PATH)}")
-logger.info(f"- Detection settings: conf={DETECTION_CONF}, iou={DETECTION_IOU}")
-
 # Arabic mapping
 ARABIC_MAPPING = {
     "0": "٠", "1": "١", "2": "٢", "3": "٣", "4": "٤", "5": "٥", "6": "٦", "7": "٧", "8": "٨", "9": "٩",
@@ -92,3 +101,5 @@ ARABIC_MAPPING = {
     "alef": "أ", "car": "", "daal": "د", "geem": "ج", "ghayn": "غ", "khaa": "خ",
     "sheen": "ش", "teh": "ت", "theh": "ث", "zaal": "ذ", "7aah": "ح",
 }
+
+logger.info("Configuration loaded successfully")

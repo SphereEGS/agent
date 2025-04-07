@@ -194,6 +194,19 @@ class PlateProcessor:
             logger.warning(f"Could not add text to image: {str(e)}")
             return image
 
+    def visualize_roi(self, image):
+        """
+        Draw ROI visualization on the image for gate entry logging.
+        If no ROI is available, returns the original image.
+        """
+        try:
+            # Just return the original image if we don't have any ROI to visualize
+            # This could be enhanced later to draw any known ROI from vehicle_tracking
+            return image
+        except Exception as e:
+            logger.error(f"Error visualizing ROI: {str(e)}")
+            return image
+
     def process_vehicle_image(self, vehicle_image, save_path=None):
         try:
             # Preprocess the entire vehicle image before processing the license plate

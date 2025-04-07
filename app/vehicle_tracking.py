@@ -139,9 +139,49 @@ class VehicleTracker:
         
         vehicle_img = self._extract_vehicle_image(frame, box)
         if vehicle_img is not None:
-            self.frame_buffer[track_id].append(vehicle_img)
+            # Calculate image clarity score - higher is better
+            clarity_score = self._calculate_image_quality(vehicle_img)
+            self.frame_buffer[track_id].append((vehicle_img, clarity_score))
+            logger.debug(f"[TRACKER] Vehicle {track_id} frame quality: {clarity_score:.2f}")
+            
+            # Keep buffer at maximum size
             if len(self.frame_buffer[track_id]) > self.max_buffer_size:
                 self.frame_buffer[track_id].pop(0)
+
+    def _calculate_image_quality(self, image):
+        """Calculate image quality/clarity score based on Laplacian variance"""
+        try:
+            # Convert to grayscale
+            if len(image.shape) == 3:
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = image
+                
+            # Calculate Laplacian variance - measure of focus/clarity
+            laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+            score = laplacian.var()
+            
+            # Calculate histogram distribution - well-exposed images have good distribution
+            hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
+            hist_std = np.std(hist)
+            
+            # Calculate brightness
+            brightness = np.mean(gray)
+            
+            # Calculate contrast
+            contrast = np.std(gray)
+            
+            # Combined score (higher is better)
+            combined_score = (score * 0.5) + (hist_std * 0.2) + (contrast * 0.3)
+            
+            # Penalize very dark or very bright images
+            if brightness < 30 or brightness > 220:
+                combined_score *= 0.7
+                
+            return combined_score
+        except Exception as e:
+            logger.error(f"[TRACKER] Error calculating image quality: {str(e)}")
+            return 0
 
     def _cleanup_stale_vehicles(self):
         """Remove vehicles that haven't been seen recently"""
@@ -174,10 +214,27 @@ class VehicleTracker:
             else:
                 logger.debug("[TRACKER] No ROI polygon defined")
             
+            # Ensure frame dimensions are consistent for optical flow
+            if hasattr(self, 'prev_frame_shape') and self.prev_frame_shape != frame.shape:
+                logger.warning(f"[TRACKER] Frame size changed from {self.prev_frame_shape} to {frame.shape}. This may cause optical flow errors.")
+            self.prev_frame_shape = frame.shape
+            
+            # Resize frame for faster processing (maintain aspect ratio)
+            orig_h, orig_w = frame.shape[:2]
+            target_w = 640  # Lower resolution for faster processing
+            target_h = int(orig_h * (target_w / orig_w))
+            
+            # Only resize if the frame is larger than target size
+            if orig_w > target_w:
+                logger.debug(f"[TRACKER] Resizing frame from {orig_w}x{orig_h} to {target_w}x{target_h} for faster processing")
+                detection_frame = cv2.resize(frame, (target_w, target_h))
+            else:
+                detection_frame = frame
+            
             # Run detection
             logger.debug("[TRACKER] Running YOLO detection and tracking")
             results = self.model.track(
-                frame,
+                detection_frame,
                 persist=True,
                 classes=list(VEHICLE_CLASSES.keys()),
                 conf=0.3,  # Lower confidence threshold
@@ -207,7 +264,54 @@ class VehicleTracker:
                     track_ids = boxes.id.int().cpu().tolist()
                     class_ids = boxes.cls.int().cpu().tolist()
                     
+                    # Scale boxes back to original frame size if resized
+                    if orig_w > target_w:
+                        scale_x = orig_w / target_w
+                        scale_y = orig_h / target_h
+                        for i in range(len(boxes_np)):
+                            boxes_np[i][0] *= scale_x  # x1
+                            boxes_np[i][1] *= scale_y  # y1
+                            boxes_np[i][2] *= scale_x  # x2
+                            boxes_np[i][3] *= scale_y  # y2
+                    
                     logger.debug(f"[TRACKER] Detected {len(track_ids)} vehicles: {dict(zip(track_ids, [VEHICLE_CLASSES.get(c, 'unknown') for c in class_ids]))}")
+                    
+                    # Process each detected vehicle
+                    vehicles_in_roi = 0
+                    vehicles_processed_for_plates = 0
+                    
+                    for box, track_id, class_id in zip(boxes_np, track_ids, class_ids):
+                        if class_id not in VEHICLE_CLASSES:
+                            continue
+                            
+                        # Check if vehicle is in ROI
+                        is_in_roi = self._is_vehicle_in_roi(box)
+                        
+                        # Update vehicle state for tracking
+                        self._update_vehicle_state(track_id, frame, box)
+                        
+                        # Only process license plates for vehicles in ROI
+                        if is_in_roi:
+                            vehicles_in_roi += 1
+                            # Only try to detect license plate if not already detected for this vehicle
+                            if track_id not in self.detected_plates and track_id in self.frame_buffer:
+                                # Process license plate if we have enough frames buffered
+                                if len(self.frame_buffer[track_id]) >= 3:
+                                    vehicles_processed_for_plates += 1
+                                    # Get best frame from buffer
+                                    best_frame = self._select_best_frame(self.frame_buffer[track_id])
+                                    if best_frame is not None:
+                                        # Process the plate on the best quality frame
+                                        logger.info(f"[TRACKER] Processing license plate for vehicle {track_id} using best quality frame")
+                                        self._process_plate(best_frame, track_id)
+                                    else:
+                                        logger.warning(f"[TRACKER] Could not select best frame for vehicle {track_id}")
+                    
+                    # Cleanup stale vehicles periodically
+                    self._cleanup_stale_vehicles()
+                    
+                    if vehicles_in_roi > 0:
+                        logger.debug(f"[TRACKER] {vehicles_in_roi} vehicles in ROI, {vehicles_processed_for_plates} processed for plates")
                     
                     # Draw all detections
                     vis_frame = self.visualize_detection(frame, boxes_np, track_ids, class_ids)
@@ -255,14 +359,31 @@ class VehicleTracker:
     def _process_plate(self, vehicle_img, track_id):
         """Process vehicle image to detect and recognize license plate."""
         try:
-            plate_text, _ = self.plate_processor.process_vehicle_image(vehicle_img)
+            plate_text, processed_image = self.plate_processor.process_vehicle_image(vehicle_img)
             if plate_text:
                 self.detected_plates[track_id] = plate_text
-                logger.info(f"Detected plate {plate_text} for vehicle {track_id}")
+                logger.info(f"[TRACKER] Detected plate {plate_text} for vehicle {track_id}")
                 return True
+            else:
+                logger.debug(f"[TRACKER] No plate detected for vehicle {track_id}")
+                return False
         except Exception as e:
-            logger.error(f"Error processing plate: {str(e)}")
-        return False
+            logger.error(f"[TRACKER] Error processing plate: {str(e)}")
+            return False
+
+    def _select_best_frame(self, frames_with_scores):
+        """Select the best frame from the buffer based on clarity score"""
+        if not frames_with_scores:
+            return None
+            
+        # Sort by clarity score (descending)
+        sorted_frames = sorted(frames_with_scores, key=lambda x: x[1], reverse=True)
+        
+        # Return the frame with the highest score
+        best_frame, best_score = sorted_frames[0]
+        logger.debug(f"[TRACKER] Selected best frame with quality score: {best_score:.2f}")
+        
+        return best_frame
 
     def get_detected_plate(self, track_id):
         """Get detected plate number for a vehicle if available."""
