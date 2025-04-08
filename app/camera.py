@@ -117,7 +117,7 @@ class InputStream:
                 frame = cv2.resize(frame, self.resize_dimensions, interpolation=cv2.INTER_AREA)
             
             self.last_successful_read_time = time.time()
-            return frame
+            return ret, frame
             
         except Exception as e:
             logger.error(f"[CAMERA] Error reading frame: {str(e)}")
