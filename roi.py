@@ -114,13 +114,20 @@ while True:
             original_y = int(y / scale_ratio)
             original_polygon_points.append((original_x, original_y))
         
+        # Print information for debugging
+        print(f"Original frame dimensions: {original_width}x{original_height}")
+        print(f"Display frame dimensions: {display_frame.shape[1]}x{display_frame.shape[0]}")
+        print(f"Scale ratio used: {scale_ratio}")
+        print(f"Display polygon points: {polygon_points}")
+        print(f"Original polygon points: {original_polygon_points}")
+        
         # Save to config.json
         save_path = "config.json"
         with open(save_path, "w") as f:
             json.dump(original_polygon_points, f)
-        print("Display polygon points:", polygon_points)
-        print(f"Original polygon points saved to {save_path}:", original_polygon_points)
-        cv2.waitKey(500)
+        print(f"Polygon points saved to {save_path}")
+        print("ROI has been saved successfully!")
+        cv2.waitKey(1000)  # Wait a bit longer to show success
         break
 
 cv2.destroyAllWindows()

@@ -38,12 +38,13 @@ class VehicleTracker:
             
             # Load ROI configuration
             self.original_roi = self._load_roi_polygon(roi_config_path)
-            self.roi_polygon = self.original_roi
+            self.roi_polygon = self.original_roi  # Will be scaled per frame later
             
             if self.original_roi is not None:
                 logger.info(f"ROI loaded with {len(self.original_roi)} points")
+                logger.debug(f"Original ROI points: {self.original_roi.tolist()}")
             else:
-                logger.warning("No ROI configuration found")
+                logger.warning("No ROI configuration found. Using full frame.")
                 
             # Initialize rest of components
             self.roi_lock = threading.Lock()
@@ -62,18 +63,60 @@ class VehicleTracker:
             raise
 
     def _load_roi_polygon(self, config_path):
-        """Load ROI polygon from config file."""
+        """Load ROI polygon from config file and scale it to match the current frame size."""
         if not config_path:
             return None
             
         try:
+            if not os.path.exists(config_path):
+                logger.warning(f"ROI config file not found: {config_path}")
+                return None
+                
             with open(config_path, "r") as f:
                 config_data = json.load(f)
-            if isinstance(config_data, list) and len(config_data) >= 3:
-                return np.array(config_data, dtype=np.int32)
+                
+            if not isinstance(config_data, list) or len(config_data) < 3:
+                logger.warning(f"Invalid ROI format in {config_path}: {config_data}")
+                return None
+                
+            # Convert to numpy array
+            roi_polygon = np.array(config_data, dtype=np.int32)
+            logger.info(f"Loaded ROI from {config_path} with {len(roi_polygon)} points: {roi_polygon.tolist()}")
+            return roi_polygon
         except Exception as e:
             logger.error(f"Error loading ROI polygon: {str(e)}")
         return None
+
+    def _scale_roi_to_frame(self, frame):
+        """Scale ROI to match current frame dimensions"""
+        if self.original_roi is None or not hasattr(self, 'first_frame'):
+            return self.original_roi
+            
+        try:
+            # Get the current frame dimensions
+            frame_h, frame_w = frame.shape[:2]
+            # Get the original frame dimensions from roi.py
+            original_w, original_h = 1920, 1080  # These are the dimensions from the CCTV camera
+            
+            logger.debug(f"Scaling ROI from {original_w}x{original_h} to {frame_w}x{frame_h}")
+            
+            # Calculate scale factors
+            scale_x = frame_w / original_w
+            scale_y = frame_h / original_h
+            
+            # Create a copy of the original ROI
+            scaled_roi = self.original_roi.copy()
+            
+            # Scale the ROI coordinates
+            scaled_roi[:, 0] = (scaled_roi[:, 0] * scale_x).astype(np.int32)
+            scaled_roi[:, 1] = (scaled_roi[:, 1] * scale_y).astype(np.int32)
+            
+            logger.debug(f"Scaled ROI points: {scaled_roi.tolist()}")
+            
+            return scaled_roi
+        except Exception as e:
+            logger.error(f"Error scaling ROI: {str(e)}")
+            return self.original_roi
 
     def _is_vehicle_in_roi(self, box):
         """Check if vehicle's center point is within ROI."""
@@ -86,6 +129,7 @@ class VehicleTracker:
         
         with self.roi_lock:
             try:
+                # Make sure we're using the properly scaled ROI from the current frame
                 result = cv2.pointPolygonTest(self.roi_polygon, (center_x, center_y), False)
                 return result >= 0
             except Exception as e:
@@ -96,9 +140,8 @@ class VehicleTracker:
         """Draw detection boxes, IDs and plates on frame"""
         vis_frame = frame.copy()
         
-        # Draw ROI if available - changed to blue
-        if self.roi_polygon is not None:
-            cv2.polylines(vis_frame, [self.roi_polygon], True, (255, 0, 0), 2)  # Blue for ROI
+        # We don't need to draw ROI here as it's already drawn in detect_vehicles
+        # This avoids drawing the ROI twice with different styles
 
         # Draw vehicle boxes and info
         for box, track_id, class_id in zip(boxes, track_ids, class_ids):
@@ -108,18 +151,23 @@ class VehicleTracker:
             class_name = VEHICLE_CLASSES[class_id]
             x1, y1, x2, y2 = map(int, box)
             
-            # Draw box - changed to green with yellow outline
-            cv2.rectangle(vis_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)  # Green box
-            cv2.rectangle(vis_frame, (x1-1, y1-1), (x2+1, y2+1), (0, 255, 255), 1)  # Yellow outline
+            # Check if vehicle is in ROI
+            is_in_roi = self._is_vehicle_in_roi(box)
             
-            # Draw ID and class - white text with black outline
+            # Use different colors based on whether vehicle is in ROI
+            box_color = (0, 255, 0) if is_in_roi else (0, 165, 255)  # Green if in ROI, orange if not
+            
+            # Draw box
+            cv2.rectangle(vis_frame, (x1, y1), (x2, y2), box_color, 2)
+            
+            # Draw ID and class
             label = f"ID: {track_id} {class_name}"
             cv2.putText(vis_frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 
                        0.6, (0, 0, 0), 2)  # Black outline
             cv2.putText(vis_frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 
                        0.6, (255, 255, 255), 1)  # White text
             
-            # Draw plate if detected - red text
+            # Draw plate if detected
             if track_id in self.detected_plates:
                 plate_text = self.detected_plates[track_id]
                 cv2.putText(vis_frame, f"Plate: {plate_text}",
@@ -204,26 +252,30 @@ class VehicleTracker:
             return False, None
             
         try:
-            # Store first frame for ROI scaling if not already stored
+            # Store first frame for reference
             if not hasattr(self, 'first_frame'):
                 self.first_frame = frame.copy()
-                # Reload ROI with scaling
-                self.original_roi = self._load_roi_polygon("config.json")
-                self.roi_polygon = self.original_roi
-                if self.original_roi is not None:
-                    logger.info(f"ROI scaled and loaded with {len(self.original_roi)} points")
-                    logger.debug(f"ROI points: {self.original_roi.tolist()}")
+                logger.info(f"Stored first frame with dimensions: {frame.shape[1]}x{frame.shape[0]}")
             
             # Create visualization frame
             vis_frame = frame.copy()
             
+            # Scale ROI to match current frame dimensions
+            self.roi_polygon = self._scale_roi_to_frame(frame)
+            
             # Draw ROI first - make it more visible
             if self.roi_polygon is not None:
-                # Draw ROI with a thicker line and different color
-                cv2.polylines(vis_frame, [self.roi_polygon], True, (0, 255, 0), 3)  # Green color, thicker line
+                # Draw ROI with a thicker line and brighter color
+                cv2.polylines(vis_frame, [self.roi_polygon], True, (0, 255, 0), 4)  # Bright green, thick line
+                
+                # Fill the ROI with semi-transparent green
+                overlay = vis_frame.copy()
+                cv2.fillPoly(overlay, [self.roi_polygon], (0, 200, 0, 50))  # Semi-transparent green
+                cv2.addWeighted(overlay, 0.2, vis_frame, 0.8, 0, vis_frame)
+                
                 # Add a label
                 cv2.putText(vis_frame, "ROI", (self.roi_polygon[0][0], self.roi_polygon[0][1] - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                 logger.debug("[TRACKER] Drawing ROI polygon on visualization frame")
             else:
                 logger.debug("[TRACKER] No ROI polygon defined")
