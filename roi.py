@@ -3,6 +3,7 @@ import json
 from dotenv import load_dotenv
 import os
 import sys
+from app.config import FRAME_WIDTH, FRAME_HEIGHT
 
 load_dotenv()
 
@@ -62,7 +63,8 @@ if not ret:
 original_width = original_frame.shape[1]
 original_height = original_frame.shape[0]
 
-target_width = 800
+# Use the same target dimensions as the main application
+target_width = FRAME_WIDTH
 scale_ratio = target_width / original_frame.shape[1]
 display_frame = cv2.resize(original_frame, (target_width, int(original_frame.shape[0] * scale_ratio)))
 
