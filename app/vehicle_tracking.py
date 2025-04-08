@@ -219,17 +219,8 @@ class VehicleTracker:
                 logger.warning(f"[TRACKER] Frame size changed from {self.prev_frame_shape} to {frame.shape}. This may cause optical flow errors.")
             self.prev_frame_shape = frame.shape
             
-            # Resize frame for faster processing (maintain aspect ratio)
-            orig_h, orig_w = frame.shape[:2]
-            target_w = 640  # Lower resolution for faster processing
-            target_h = int(orig_h * (target_w / orig_w))
-            
-            # Only resize if the frame is larger than target size
-            if orig_w > target_w:
-                logger.debug(f"[TRACKER] Resizing frame from {orig_w}x{orig_h} to {target_w}x{target_h} for faster processing")
-                detection_frame = cv2.resize(frame, (target_w, target_h))
-            else:
-                detection_frame = frame
+            # Use the frame as is since it's already resized by the camera class
+            detection_frame = frame
             
             # Run detection
             logger.debug("[TRACKER] Running YOLO detection and tracking")
@@ -237,42 +228,17 @@ class VehicleTracker:
                 detection_frame,
                 persist=True,
                 classes=list(VEHICLE_CLASSES.keys()),
-                conf=0.3,  # Lower confidence threshold
+                conf=0.3,
                 iou=0.45,
                 verbose=False
             )
             
-            # Check if we have valid detection results with tracking IDs
-            if not results or len(results) == 0:
-                logger.debug("[TRACKER] No detection results from YOLO model")
-                cv2.imshow('Detections', vis_frame)
-                cv2.waitKey(1)
-                return False, vis_frame
-                
-            # Make sure boxes and IDs exist
-            boxes = results[0].boxes
-            if not hasattr(boxes, 'id') or boxes.id is None:
-                logger.debug("[TRACKER] No tracking IDs in YOLO results")
-                cv2.imshow('Detections', vis_frame)
-                cv2.waitKey(1)
-                return False, vis_frame
-                
             # Process detections if we have any
-            if len(boxes) > 0:
+            if len(results) > 0 and hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
                 try:
-                    boxes_np = boxes.xyxy.cpu().numpy()
-                    track_ids = boxes.id.int().cpu().tolist()
-                    class_ids = boxes.cls.int().cpu().tolist()
-                    
-                    # Scale boxes back to original frame size if resized
-                    if orig_w > target_w:
-                        scale_x = orig_w / target_w
-                        scale_y = orig_h / target_h
-                        for i in range(len(boxes_np)):
-                            boxes_np[i][0] *= scale_x  # x1
-                            boxes_np[i][1] *= scale_y  # y1
-                            boxes_np[i][2] *= scale_x  # x2
-                            boxes_np[i][3] *= scale_y  # y2
+                    boxes = results[0].boxes.xyxy.cpu().numpy()
+                    track_ids = results[0].boxes.id.int().cpu().tolist()
+                    class_ids = results[0].boxes.cls.int().cpu().tolist()
                     
                     logger.debug(f"[TRACKER] Detected {len(track_ids)} vehicles: {dict(zip(track_ids, [VEHICLE_CLASSES.get(c, 'unknown') for c in class_ids]))}")
                     
@@ -280,7 +246,7 @@ class VehicleTracker:
                     vehicles_in_roi = 0
                     vehicles_processed_for_plates = 0
                     
-                    for box, track_id, class_id in zip(boxes_np, track_ids, class_ids):
+                    for box, track_id, class_id in zip(boxes, track_ids, class_ids):
                         if class_id not in VEHICLE_CLASSES:
                             continue
                             
@@ -314,7 +280,7 @@ class VehicleTracker:
                         logger.debug(f"[TRACKER] {vehicles_in_roi} vehicles in ROI, {vehicles_processed_for_plates} processed for plates")
                     
                     # Draw all detections
-                    vis_frame = self.visualize_detection(frame, boxes_np, track_ids, class_ids)
+                    vis_frame = self.visualize_detection(frame, boxes, track_ids, class_ids)
                 except Exception as e:
                     logger.error(f"[TRACKER] Error processing detection boxes: {str(e)}")
             
