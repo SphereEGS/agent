@@ -63,7 +63,7 @@ class VehicleTracker:
             raise
 
     def _load_roi_polygon(self, config_path):
-        """Load ROI polygon from config file."""
+        """Load ROI polygon from config file and scale it to match the current frame size."""
         if not config_path:
             return None
             
@@ -71,7 +71,21 @@ class VehicleTracker:
             with open(config_path, "r") as f:
                 config_data = json.load(f)
             if isinstance(config_data, list) and len(config_data) >= 3:
-                return np.array(config_data, dtype=np.int32)
+                # Convert to numpy array
+                roi_polygon = np.array(config_data, dtype=np.int32)
+                
+                # Get the original frame dimensions from the first frame
+                if hasattr(self, 'first_frame'):
+                    orig_h, orig_w = self.first_frame.shape[:2]
+                    # Calculate scale factors
+                    scale_x = FRAME_WIDTH / orig_w
+                    scale_y = FRAME_HEIGHT / orig_h
+                    # Scale the ROI coordinates
+                    roi_polygon[:, 0] = (roi_polygon[:, 0] * scale_x).astype(np.int32)
+                    roi_polygon[:, 1] = (roi_polygon[:, 1] * scale_y).astype(np.int32)
+                    logger.debug(f"Scaled ROI from {orig_w}x{orig_h} to {FRAME_WIDTH}x{FRAME_HEIGHT}")
+                
+                return roi_polygon
         except Exception as e:
             logger.error(f"Error loading ROI polygon: {str(e)}")
         return None
@@ -205,6 +219,16 @@ class VehicleTracker:
             return False, None
             
         try:
+            # Store first frame for ROI scaling if not already stored
+            if not hasattr(self, 'first_frame'):
+                self.first_frame = frame.copy()
+                # Reload ROI with scaling
+                self.original_roi = self._load_roi_polygon("config.json")
+                self.roi_polygon = self.original_roi
+                if self.original_roi is not None:
+                    logger.info(f"ROI scaled and loaded with {len(self.original_roi)} points")
+                    logger.debug(f"ROI points: {self.original_roi.tolist()}")
+            
             # Always create a visualization frame first
             vis_frame = frame.copy()
             
