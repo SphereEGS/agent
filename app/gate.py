@@ -32,36 +32,19 @@ class GateControl:
         threading.Thread(target=self._login, daemon=True).start()
 
     def _login(self):
-        while True:
-            if not self.enabled:
-                return
-                
-            logger.info(f"🔑 Rotating session id for {self.gate_type} gate")
-            try:
-                payload = {
-                    "User": {
-                        "login_id": self.username,
-                        "password": self.password,
-                    }
-                }
-                response = requests.post(
-                    f"{self.base_url}/login",
-                    json=payload,
-                    verify=False,
-                    timeout=5,
-                )
-                response.raise_for_status()
-                session_id = response.headers.get("bs-session-id")
-                if session_id:
-                    self.session_id = session_id
-                    logger.info(f"✅ Session id updated for {self.gate_type}: {self.session_id}")
-                else:
-                    logger.error(f"❌ Failed to update session id for {self.gate_type}.")
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Login failed for {self.gate_type}: {e}")
-            except Exception as e:
-                logger.error(f"❌ Error rotating session id for {self.gate_type}: {e}")
-            time.sleep(600)
+        """Login to the gate system and get a session ID."""
+        try:
+            response = requests.post(
+                f"{self.base_url}/login",
+                json={"username": self.username, "password": self.password},
+                verify=False
+            )
+            response.raise_for_status()
+            self.session_id = response.json()["session_id"]
+            logger.info(f"[OK] Session id updated for {self.gate_type}: {self.session_id}")
+        except Exception as e:
+            logger.error(f"Failed to login to {self.gate_type} gate: {str(e)}")
+            raise
 
     def _call_api(self, endpoint, action):
         if not self.enabled:
