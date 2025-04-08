@@ -12,8 +12,13 @@ load_dotenv()
 if sys.platform == 'win32':
     # Force UTF-8 encoding for console output
     os.system('chcp 65001 > NUL')
-    # Configure locale for UTF-8
-    locale.setlocale(locale.LC_ALL, '.UTF-8')
+    try:
+        # Try to set UTF-8 encoding without changing locale
+        import codecs
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.buffer)
+        sys.stderr = codecs.getwriter('utf-8')(sys.stderr.buffer)
+    except Exception as e:
+        print(f"Warning: Could not set UTF-8 encoding: {e}")
 
 # Configure logging
 log_dir = "logs"
