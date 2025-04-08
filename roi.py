@@ -114,8 +114,8 @@ while True:
             original_y = int(y / scale_ratio)
             original_polygon_points.append((original_x, original_y))
         
-        # Save to roi_coordinates.json
-        save_path = "roi_coordinates.json"
+        # Save to config.json
+        save_path = "config.json"
         with open(save_path, "w") as f:
             json.dump(original_polygon_points, f)
         print("Display polygon points:", polygon_points)

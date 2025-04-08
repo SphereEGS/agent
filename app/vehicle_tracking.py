@@ -42,6 +42,7 @@ class VehicleTracker:
             
             if self.original_roi is not None:
                 logger.info(f"ROI loaded with {len(self.original_roi)} points")
+                logger.debug(f"ROI points: {self.original_roi.tolist()}")
             else:
                 logger.warning("No ROI configuration found")
                 
