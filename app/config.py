@@ -1,11 +1,19 @@
 import logging
 import os
 import sys
+import locale
 from dotenv import load_dotenv
 from logging.handlers import RotatingFileHandler
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Fix for Unicode encoding in Windows command prompt
+if sys.platform == 'win32':
+    # Force UTF-8 encoding for console output
+    os.system('chcp 65001 > NUL')
+    # Configure locale for UTF-8
+    locale.setlocale(locale.LC_ALL, '.UTF-8')
 
 # Configure logging
 log_dir = "logs"
@@ -18,7 +26,7 @@ logger.setLevel(logging.DEBUG)
 
 # Create handlers
 console_handler = logging.StreamHandler(sys.stdout)
-file_handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5)
+file_handler = RotatingFileHandler(log_file, maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
 console_handler.setLevel(logging.INFO)
 file_handler.setLevel(logging.DEBUG)
 

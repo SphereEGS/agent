@@ -173,6 +173,27 @@ class VehicleTracker:
                 cv2.putText(vis_frame, f"Plate: {plate_text}",
                            (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX,
                            0.6, (0, 0, 255), 2)  # Red for plate text
+                
+                # Update last recognized plate
+                self.last_recognized_plate = plate_text
+                # Check authorization (this is simplified, replace with your actual authorization logic)
+                self.last_plate_authorized = False  # Default to not authorized
+        
+        # Display the last recognized plate at the lower left corner
+        if hasattr(self, 'last_recognized_plate') and self.last_recognized_plate is not None:
+            h, w = vis_frame.shape[:2]
+            auth_status = "Authorized" if self.last_plate_authorized else "Not Authorized"
+            auth_color = (0, 255, 0) if self.last_plate_authorized else (0, 0, 255)  # Green or Red
+            
+            # Draw background rectangle for better visibility
+            cv2.rectangle(vis_frame, (10, h-70), (400, h-10), (0, 0, 0), -1)
+            cv2.rectangle(vis_frame, (10, h-70), (400, h-10), (255, 255, 255), 1)
+            
+            # Display last plate info
+            cv2.putText(vis_frame, f"Last Plate: {self.last_recognized_plate}", 
+                       (20, h-45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            cv2.putText(vis_frame, f"Status: {auth_status}", 
+                       (20, h-15), cv2.FONT_HERSHEY_SIMPLEX, 0.8, auth_color, 2)
         
         return vis_frame
 
@@ -256,6 +277,10 @@ class VehicleTracker:
             if not hasattr(self, 'first_frame'):
                 self.first_frame = frame.copy()
                 logger.info(f"Stored first frame with dimensions: {frame.shape[1]}x{frame.shape[0]}")
+                
+                # Initialize last plate tracking
+                self.last_recognized_plate = None
+                self.last_plate_authorized = False
             
             # Create visualization frame
             vis_frame = frame.copy()
@@ -395,6 +420,14 @@ class VehicleTracker:
             if plate_text:
                 self.detected_plates[track_id] = plate_text
                 logger.info(f"[TRACKER] Detected plate {plate_text} for vehicle {track_id}")
+                
+                # Update the last recognized plate for display
+                self.last_recognized_plate = plate_text
+                
+                # Default to unauthorized - the actual check happens in app/__init__.py
+                # when processing frame, and visualize_detection will be called again
+                self.last_plate_authorized = False
+                
                 return True
             else:
                 logger.debug(f"[TRACKER] No plate detected for vehicle {track_id}")

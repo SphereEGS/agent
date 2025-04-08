@@ -116,6 +116,11 @@ class SpherexAgent:
                                 is_authorized = self.cache.is_authorized(plate_text)
                                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 
+                                # Update the authorization status for display
+                                if hasattr(self.vehicle_tracker, 'last_recognized_plate') and \
+                                   self.vehicle_tracker.last_recognized_plate == plate_text:
+                                    self.vehicle_tracker.last_plate_authorized = is_authorized
+                                
                                 # Log the detection
                                 auth_status = "Authorized" if is_authorized else "Not Authorized"
                                 logger.info(f"[AGENT] [{timestamp}] Vehicle {track_id} with plate: {plate_text} - {auth_status}")
