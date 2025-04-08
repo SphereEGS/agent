@@ -23,130 +23,111 @@ class InputStream:
         
         # Initialize stream with configured source
         logger.info(f"[CAMERA] Initializing input stream with source: {CAMERA_URL}")
-        self._connect_to_source(CAMERA_URL)
+        self._connect_to_source()
         
-    def _connect_to_source(self, source):
-        """
-        Connect to a camera source (RTSP, webcam, or video file)
-        
-        Args:
-            source: Camera source (RTSP URL, webcam index, or video file path)
-        """
-        # Clean the source string - remove quotes and comments that might be in the string
-        if isinstance(source, str):
-            # Remove quotes and comments if present (from environment variables)
-            source = source.strip()
-            if source.startswith('"') and source.endswith('"'):
-                source = source[1:-1].strip()
-            # Handle quotes within the string
-            if '"' in source:
-                source = source.replace('"', '')
-            # Remove any comments
+    def _connect_to_source(self):
+        """Connect to the video source with proper error handling."""
+        try:
+            # Clean the source string of any quotes or comments
+            source = CAMERA_URL.strip()
+            if source.startswith(('"', "'")):
+                source = source[1:-1]
             if '#' in source:
                 source = source.split('#')[0].strip()
-        
-        logger.info(f"[CAMERA] Connecting to cleaned source: {source}")
-        
-        try:
-            logger.info(f"[CAMERA] Connecting to source: {source}")
             
-            # Handle different source types
-            if isinstance(source, str) and source.startswith('rtsp'):
-                # For RTSP streams, use a specific configuration
-                self.cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
-                # Set timeout for RTSP connections (in milliseconds)
-                self.cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000)  # 5 second timeout
-                
-                # Check if connection was successful
-                if not self.cap.isOpened():
-                    raise Exception(f"Failed to connect to RTSP stream: {source}")
-                    
-                logger.info(f"[CAMERA] Successfully connected to RTSP stream")
-                self.source = "rtsp"
-                
-            elif source == "0" or source == 0 or (isinstance(source, str) and source.isdigit()):
-                # For webcam - convert string to integer if needed
-                index = 0 if source == "0" else int(source)
-                self.cap = cv2.VideoCapture(index)
-                
-                if not self.cap.isOpened():
-                    raise Exception(f"Failed to open webcam at index {index}")
-                    
-                logger.info(f"[CAMERA] Successfully connected to webcam at index {index}")
-                self.source = "webcam"
-                
+            logger.info(f"Attempting to connect to: {source}")
+            
+            # Set RTSP transport to TCP for better reliability
+            if source.startswith('rtsp://'):
+                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp'
+                cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
             else:
-                # For video files
-                if isinstance(source, str) and not os.path.exists(source):
-                    raise Exception(f"Input file not found: {source}")
-                    
-                self.cap = cv2.VideoCapture(source)
-                
-                if not self.cap.isOpened():
-                    raise Exception(f"Failed to open video file: {source}")
-                    
-                logger.info(f"[CAMERA] Successfully opened video file: {source}")
-                self.source = "video"
-                
-            # Set frame size
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+                cap = cv2.VideoCapture(source)
             
-            # Get the first frame
-            ret, self.last_frame = self.cap.read()
-            if not ret:
-                raise Exception("Failed to read frame from source")
-                
-            # Set dimensions from the actual frame
-            self.height, self.width = self.last_frame.shape[:2]
-            self.last_successful_read_time = time.time()
-            logger.info(f"[CAMERA] Stream initialized with resolution: {self.width}x{self.height}")
+            # Wait for the connection to be established
+            if not cap.isOpened():
+                logger.error(f"Failed to connect to: {source}")
+                if ALLOW_FALLBACK:
+                    logger.info("Falling back to local webcam (index 0)")
+                    cap = cv2.VideoCapture(0)
+                    if not cap.isOpened():
+                        raise RuntimeError("Failed to connect to webcam")
+                else:
+                    raise RuntimeError(f"Failed to connect to camera source: {source}")
+            
+            # Get the original frame size
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            logger.info(f"Connected to camera with resolution: {width}x{height}")
+            
+            # Use the window size from configuration
+            target_width = FRAME_WIDTH
+            target_height = FRAME_HEIGHT
+            
+            # Calculate the aspect ratio preserving dimensions
+            aspect_ratio = width / height
+            if aspect_ratio > (target_width / target_height):
+                # Image is wider than target
+                new_width = target_width
+                new_height = int(target_width / aspect_ratio)
+            else:
+                # Image is taller than target
+                new_height = target_height
+                new_width = int(target_height * aspect_ratio)
+            
+            # Ensure dimensions are even numbers (required by some OpenCV operations)
+            new_width = new_width - (new_width % 2)
+            new_height = new_height - (new_height % 2)
+            
+            logger.info(f"Resizing frames to: {new_width}x{new_height}")
+            
+            # Store the resize dimensions
+            self.resize_dimensions = (new_width, new_height)
+            
+            return cap
             
         except Exception as e:
-            logger.error(f"[CAMERA] Error initializing stream from source {source}: {str(e)}")
-            self.cap = None
-            
-            # Try fallback to webcam if enabled and we're not already trying webcam
-            if ALLOW_FALLBACK and source != 0 and source != "0":
-                logger.warning("[CAMERA] Attempting fallback to default webcam")
-                try:
-                    self._connect_to_source(0)
-                except Exception as fallback_error:
-                    logger.error(f"[CAMERA] Fallback to webcam also failed: {str(fallback_error)}")
-                    raise Exception("Both primary and fallback camera connections failed")
-            else:
-                logger.error(f"[CAMERA] No fallback attempted as ALLOW_FALLBACK is {ALLOW_FALLBACK}")
-                raise
+            logger.error(f"Error connecting to camera: {str(e)}")
+            if ALLOW_FALLBACK:
+                logger.info("Attempting fallback to webcam...")
+                cap = cv2.VideoCapture(0)
+                if not cap.isOpened():
+                    raise RuntimeError("Failed to connect to webcam")
+                return cap
+            raise
     
     def read(self):
-        """
-        Read a frame from the camera
-        
-        Returns:
-            tuple: (success, frame)
-        """
-        if self.cap is None:
-            return False, None
+        """Read a frame from the camera with error handling and reconnection logic."""
+        try:
+            if not self.cap or not self.cap.isOpened():
+                logger.warning("[CAMERA] Camera not initialized, attempting to reconnect")
+                self.cap = self._connect_to_source()
             
-        ret, frame = self.cap.read()
-        
-        if ret:
-            self.frame_count += 1
-            self.last_frame = frame
+            ret, frame = self.cap.read()
+            
+            if not ret:
+                logger.warning("[CAMERA] Failed to read frame, attempting reconnection")
+                self.cap = self._connect_to_source()
+                ret, frame = self.cap.read()
+                if not ret:
+                    raise RuntimeError("Failed to read frame after reconnection")
+            
+            # Resize the frame to the target dimensions while preserving aspect ratio
+            if hasattr(self, 'resize_dimensions'):
+                frame = cv2.resize(frame, self.resize_dimensions, interpolation=cv2.INTER_AREA)
+            
             self.last_successful_read_time = time.time()
-            return True, frame
-        else:
-            # If we haven't been able to read a frame for more than 5 seconds, attempt reconnection
-            current_time = time.time()
-            if current_time - self.last_successful_read_time > 5:
-                logger.warning(f"[CAMERA] No frames read for 5 seconds, attempting reconnection")
-                try:
-                    self._connect_to_source(CAMERA_URL)
-                    return self.read()
-                except Exception as e:
-                    logger.error(f"[CAMERA] Reconnection failed: {str(e)}")
+            return frame
             
-            return False, self.last_frame
+        except Exception as e:
+            logger.error(f"[CAMERA] Error reading frame: {str(e)}")
+            if ALLOW_FALLBACK:
+                logger.info("[CAMERA] Attempting fallback to webcam...")
+                self.cap = cv2.VideoCapture(0)
+                if not self.cap.isOpened():
+                    raise RuntimeError("Failed to connect to webcam")
+                return self.read()
+            raise
     
     def release(self):
         """
