@@ -42,7 +42,6 @@ class VehicleTracker:
             
             if self.original_roi is not None:
                 logger.info(f"ROI loaded with {len(self.original_roi)} points")
-                logger.debug(f"ROI points: {self.original_roi.tolist()}")
             else:
                 logger.warning("No ROI configuration found")
                 
@@ -63,7 +62,7 @@ class VehicleTracker:
             raise
 
     def _load_roi_polygon(self, config_path):
-        """Load ROI polygon from config file and scale it to match the current frame size."""
+        """Load ROI polygon from config file."""
         if not config_path:
             return None
             
@@ -71,21 +70,7 @@ class VehicleTracker:
             with open(config_path, "r") as f:
                 config_data = json.load(f)
             if isinstance(config_data, list) and len(config_data) >= 3:
-                # Convert to numpy array
-                roi_polygon = np.array(config_data, dtype=np.int32)
-                
-                # Get the original frame dimensions from the first frame
-                if hasattr(self, 'first_frame'):
-                    orig_h, orig_w = self.first_frame.shape[:2]
-                    # Calculate scale factors
-                    scale_x = FRAME_WIDTH / orig_w
-                    scale_y = FRAME_HEIGHT / orig_h
-                    # Scale the ROI coordinates
-                    roi_polygon[:, 0] = (roi_polygon[:, 0] * scale_x).astype(np.int32)
-                    roi_polygon[:, 1] = (roi_polygon[:, 1] * scale_y).astype(np.int32)
-                    logger.debug(f"Scaled ROI from {orig_w}x{orig_h} to {FRAME_WIDTH}x{FRAME_HEIGHT}")
-                
-                return roi_polygon
+                return np.array(config_data, dtype=np.int32)
         except Exception as e:
             logger.error(f"Error loading ROI polygon: {str(e)}")
         return None
@@ -229,12 +214,16 @@ class VehicleTracker:
                     logger.info(f"ROI scaled and loaded with {len(self.original_roi)} points")
                     logger.debug(f"ROI points: {self.original_roi.tolist()}")
             
-            # Always create a visualization frame first
+            # Create visualization frame
             vis_frame = frame.copy()
             
             # Draw ROI first - make it more visible
             if self.roi_polygon is not None:
-                cv2.polylines(vis_frame, [self.roi_polygon], True, (0, 0, 255), 3)
+                # Draw ROI with a thicker line and different color
+                cv2.polylines(vis_frame, [self.roi_polygon], True, (0, 255, 0), 3)  # Green color, thicker line
+                # Add a label
+                cv2.putText(vis_frame, "ROI", (self.roi_polygon[0][0], self.roi_polygon[0][1] - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                 logger.debug("[TRACKER] Drawing ROI polygon on visualization frame")
             else:
                 logger.debug("[TRACKER] No ROI polygon defined")
@@ -304,8 +293,8 @@ class VehicleTracker:
                     if vehicles_in_roi > 0:
                         logger.debug(f"[TRACKER] {vehicles_in_roi} vehicles in ROI, {vehicles_processed_for_plates} processed for plates")
                     
-                    # Draw all detections
-                    vis_frame = self.visualize_detection(frame, boxes, track_ids, class_ids)
+                    # Draw all detections on the same frame
+                    vis_frame = self.visualize_detection(vis_frame, boxes, track_ids, class_ids)
                 except Exception as e:
                     logger.error(f"[TRACKER] Error processing detection boxes: {str(e)}")
             
@@ -322,7 +311,7 @@ class VehicleTracker:
                 try:
                     error_frame = frame.copy()
                     if self.roi_polygon is not None:
-                        cv2.polylines(error_frame, [self.roi_polygon], True, (0, 0, 255), 3)
+                        cv2.polylines(error_frame, [self.roi_polygon], True, (0, 255, 0), 3)
                     cv2.putText(error_frame, "Detection error", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
                     cv2.imshow('Detections', error_frame)
                     cv2.waitKey(1)
