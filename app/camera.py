@@ -18,7 +18,7 @@ class InputStream:
         self.source = None
         self.width = FRAME_WIDTH
         self.height = FRAME_HEIGHT
-        self.fps = 30  # Default FPS
+        self.fps = 10  # Default FPS
         self.last_successful_read_time = 0
         
         # Initialize stream with configured source
