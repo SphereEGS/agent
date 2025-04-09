@@ -74,13 +74,33 @@ class VehicleTracker:
                 
             with open(config_path, "r") as f:
                 config_data = json.load(f)
+            
+            # Check if this is the new format (dictionary with keys) or old format (plain array)
+            if isinstance(config_data, dict) and "original_points" in config_data:
+                # New format - store additional information for scaling
+                self.roi_config = config_data
+                self.original_dimensions = config_data.get("original_dimensions", None)
+                self.display_dimensions = config_data.get("display_dimensions", None)
+                self.scale_ratios = config_data.get("scale_ratios", None)
                 
-            if not isinstance(config_data, list) or len(config_data) < 3:
-                logger.warning(f"Invalid ROI format in {config_path}: {config_data}")
+                # Use original points for ROI
+                roi_points = config_data["original_points"]
+                logger.info(f"Loaded ROI in new format from {config_path}")
+            else:
+                # Old format - just a list of points
+                roi_points = config_data
+                self.roi_config = None
+                self.original_dimensions = None
+                self.display_dimensions = None
+                self.scale_ratios = None
+                logger.info(f"Loaded ROI in old format from {config_path}")
+                
+            if not isinstance(roi_points, list) or len(roi_points) < 3:
+                logger.warning(f"Invalid ROI points format in {config_path}: {roi_points}")
                 return None
                 
             # Convert to numpy array
-            roi_polygon = np.array(config_data, dtype=np.int32)
+            roi_polygon = np.array(roi_points, dtype=np.int32)
             logger.info(f"Loaded ROI from {config_path} with {len(roi_polygon)} points: {roi_polygon.tolist()}")
             return roi_polygon
         except Exception as e:
@@ -106,22 +126,37 @@ class VehicleTracker:
                     self.last_plate_authorized = False
                 logger.info(f"[TRACKER] Stored first frame with dimensions {frame_w}x{frame_h} as reference")
             
-            # If frame dimensions match the first frame, no scaling needed
-            if (frame_w, frame_h) == self.first_frame_dims:
-                return self.original_roi
-            
-            # Use first frame dimensions as reference point for scaling
-            ref_width, ref_height = self.first_frame_dims
-            
-            # Log scaling operation
-            logger.debug(f"[TRACKER] Scaling ROI from {ref_width}x{ref_height} to {frame_w}x{frame_h}")
-            
-            # Calculate scale factors
-            scale_x = frame_w / ref_width
-            scale_y = frame_h / ref_height
-            
             # Create a copy of the original ROI
             scaled_roi = self.original_roi.copy()
+            
+            # If we have the original and display dimensions from config, use those for precise scaling
+            if hasattr(self, 'original_dimensions') and self.original_dimensions and hasattr(self, 'display_dimensions') and self.display_dimensions:
+                orig_width, orig_height = self.original_dimensions
+                display_width, display_height = self.display_dimensions
+                
+                logger.debug(f"[TRACKER] Using dimensions from config - Original: {orig_width}x{orig_height}, Display: {display_width}x{display_height}")
+                
+                # Calculate direct scaling factors from original frame to current frame
+                scale_x = frame_w / orig_width
+                scale_y = frame_h / orig_height
+                
+                logger.info(f"[TRACKER] Using precise ROI scaling factors from config: {scale_x:.4f}x{scale_y:.4f}")
+            else:
+                # If frame dimensions match the first frame, no scaling needed
+                if (frame_w, frame_h) == self.first_frame_dims:
+                    return self.original_roi
+                
+                # Use first frame dimensions as reference point for scaling
+                ref_width, ref_height = self.first_frame_dims
+                
+                # Log scaling operation
+                logger.debug(f"[TRACKER] Scaling ROI from {ref_width}x{ref_height} to {frame_w}x{frame_h}")
+                
+                # Calculate scale factors
+                scale_x = frame_w / ref_width
+                scale_y = frame_h / ref_height
+                
+                logger.debug(f"[TRACKER] Using estimated ROI scaling factors: {scale_x:.4f}x{scale_y:.4f}")
             
             # Scale the ROI coordinates
             scaled_roi[:, 0] = (scaled_roi[:, 0] * scale_x).astype(np.int32)
