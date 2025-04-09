@@ -133,8 +133,21 @@ class InputStream:
                     continue
                 
                 # Resize the frame to the target dimensions while preserving aspect ratio
-                if hasattr(self, 'resize_dimensions'):
-                    frame = cv2.resize(frame, self.resize_dimensions, interpolation=cv2.INTER_AREA)
+                if hasattr(self, 'resize_dimensions') and frame is not None:
+                    # Check if frame is valid and has expected dimensions
+                    if frame.size > 0 and len(frame.shape) == 3:
+                        # Ensure the frame dimensions are valid and even
+                        h, w = frame.shape[:2]
+                        if h % 2 == 1 or w % 2 == 1:
+                            # Crop by 1 pixel if dimensions are odd
+                            h_new = h - (h % 2)
+                            w_new = w - (w % 2)
+                            frame = frame[:h_new, :w_new]
+                        
+                        # Use INTER_LINEAR instead of INTER_AREA for potentially fewer warnings
+                        frame = cv2.resize(frame, self.resize_dimensions, interpolation=cv2.INTER_LINEAR)
+                    else:
+                        logger.warning("[CAMERA] Received invalid frame, skipping resize")
                 
                 # Reset reconnect delay on successful frame capture
                 reconnect_delay = 1.0
