@@ -89,22 +89,36 @@ class VehicleTracker:
 
     def _scale_roi_to_frame(self, frame):
         """Scale ROI to match current frame dimensions"""
-        if self.original_roi is None or not hasattr(self, 'first_frame'):
+        if self.original_roi is None:
             return self.original_roi
             
         try:
             # Get the current frame dimensions
             frame_h, frame_w = frame.shape[:2]
             
-            # Original dimensions from config (these need to match the dimensions used when ROI was created)
-            # These dimensions should match the original camera resolution from which ROI was captured
-            original_w, original_h = 1920, 1080
+            # Store first frame as reference for scaling if not already stored
+            if not hasattr(self, 'first_frame'):
+                self.first_frame = frame.copy()
+                self.first_frame_dims = (frame_w, frame_h)
+                # Initialize last plate tracking
+                if not hasattr(self, 'last_recognized_plate'):
+                    self.last_recognized_plate = None
+                    self.last_plate_authorized = False
+                logger.info(f"[TRACKER] Stored first frame with dimensions {frame_w}x{frame_h} as reference")
             
-            logger.debug(f"[TRACKER] ROI scaling: frame dimensions {frame_w}x{frame_h}")
+            # If frame dimensions match the first frame, no scaling needed
+            if (frame_w, frame_h) == self.first_frame_dims:
+                return self.original_roi
+            
+            # Use first frame dimensions as reference point for scaling
+            ref_width, ref_height = self.first_frame_dims
+            
+            # Log scaling operation
+            logger.debug(f"[TRACKER] Scaling ROI from {ref_width}x{ref_height} to {frame_w}x{frame_h}")
             
             # Calculate scale factors
-            scale_x = frame_w / original_w
-            scale_y = frame_h / original_h
+            scale_x = frame_w / ref_width
+            scale_y = frame_h / ref_height
             
             # Create a copy of the original ROI
             scaled_roi = self.original_roi.copy()
@@ -303,15 +317,6 @@ class VehicleTracker:
             return False, None
             
         try:
-            # Store first frame for reference
-            if not hasattr(self, 'first_frame'):
-                self.first_frame = frame.copy()
-                logger.info(f"Stored first frame with dimensions: {frame.shape[1]}x{frame.shape[0]}")
-                
-                # Initialize last plate tracking
-                self.last_recognized_plate = None
-                self.last_plate_authorized = False
-            
             # Create visualization frame
             vis_frame = frame.copy()
             
@@ -338,10 +343,11 @@ class VehicleTracker:
             else:
                 logger.debug("[TRACKER] No ROI polygon defined")
             
-            # Ensure frame dimensions are consistent for optical flow
-            if hasattr(self, 'prev_frame_shape') and self.prev_frame_shape != frame.shape:
-                logger.warning(f"[TRACKER] Frame size changed from {self.prev_frame_shape} to {frame.shape}. This may cause optical flow errors.")
-            self.prev_frame_shape = frame.shape
+            # Ensure frame dimensions are consistent
+            current_dims = (frame.shape[1], frame.shape[0])
+            if hasattr(self, 'prev_frame_shape') and self.prev_frame_shape != current_dims:
+                logger.warning(f"[TRACKER] Frame size changed from {self.prev_frame_shape} to {current_dims}")
+            self.prev_frame_shape = current_dims
             
             # Use the frame as is since it's already resized by the camera class
             detection_frame = frame
