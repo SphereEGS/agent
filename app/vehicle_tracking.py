@@ -97,11 +97,10 @@ class VehicleTracker:
             frame_h, frame_w = frame.shape[:2]
             
             # Original dimensions from config (these need to match the dimensions used when ROI was created)
-            # These values might need adjustment based on your specific configuration
+            # These dimensions should match the original camera resolution from which ROI was captured
             original_w, original_h = 1920, 1080
             
-            # Log detailed dimensions for debugging
-            logger.info(f"[TRACKER] ROI scaling: Original dimensions {original_w}x{original_h}, frame dimensions {frame_w}x{frame_h}")
+            logger.debug(f"[TRACKER] ROI scaling: frame dimensions {frame_w}x{frame_h}")
             
             # Calculate scale factors
             scale_x = frame_w / original_w
@@ -114,10 +113,10 @@ class VehicleTracker:
             scaled_roi[:, 0] = (scaled_roi[:, 0] * scale_x).astype(np.int32)
             scaled_roi[:, 1] = (scaled_roi[:, 1] * scale_y).astype(np.int32)
             
-            # Debug log the scaled points
-            logger.info(f"[TRACKER] Scaled ROI: scale factors {scale_x:.4f}x{scale_y:.4f}")
-            logger.debug(f"[TRACKER] Original ROI: {self.original_roi.tolist()}")
-            logger.debug(f"[TRACKER] Scaled ROI: {scaled_roi.tolist()}")
+            # Log only when dimension changes for debugging
+            if not hasattr(self, 'prev_scale') or self.prev_scale != (scale_x, scale_y):
+                logger.info(f"[TRACKER] ROI scale factors changed: {scale_x:.4f}x{scale_y:.4f}")
+                self.prev_scale = (scale_x, scale_y)
             
             return scaled_roi
         except Exception as e:
@@ -194,9 +193,9 @@ class VehicleTracker:
         # Always draw the last plate info section, even if empty
         h, w = vis_frame.shape[:2]
         
-        # Draw larger background rectangle for better visibility
-        cv2.rectangle(vis_frame, (10, h-90), (450, h-10), (0, 0, 0), -1)
-        cv2.rectangle(vis_frame, (10, h-90), (450, h-10), (255, 255, 255), 2)
+        # Draw smaller background rectangle for better aesthetics
+        cv2.rectangle(vis_frame, (10, h-70), (350, h-10), (0, 0, 0), -1)
+        cv2.rectangle(vis_frame, (10, h-70), (350, h-10), (255, 255, 255), 2)
         
         # Display last plate info or "No plate detected" message
         if hasattr(self, 'last_recognized_plate') and self.last_recognized_plate is not None:
@@ -212,19 +211,19 @@ class VehicleTracker:
             auth_status = "N/A"
             auth_color = (128, 128, 128)  # Gray for N/A
             
-        # Always display plate info with enhanced visibility
+        # Always display plate info with enhanced visibility but smaller font
         # Add black outline first for better visibility
         cv2.putText(vis_frame, f"Last Plate: {plate_text}", 
-                   (20, h-55), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 3)
+                   (20, h-45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
         # Then add white text
         cv2.putText(vis_frame, f"Last Plate: {plate_text}", 
-                   (20, h-55), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+                   (20, h-45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
         
         # Draw status with outline for better visibility
         cv2.putText(vis_frame, f"Status: {auth_status}", 
-                   (20, h-25), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 3)  # Black outline
+                   (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)  # Black outline
         cv2.putText(vis_frame, f"Status: {auth_status}", 
-                   (20, h-25), cv2.FONT_HERSHEY_SIMPLEX, 0.9, auth_color, 2)  # Colored text
+                   (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, auth_color, 1)  # Colored text
         
         return vis_frame
 
@@ -322,16 +321,19 @@ class VehicleTracker:
             # Draw ROI first - make it more visible
             if self.roi_polygon is not None:
                 # Draw ROI with a thicker line and brighter color
-                cv2.polylines(vis_frame, [self.roi_polygon], True, (0, 255, 0), 4)  # Bright green, thick line
+                cv2.polylines(vis_frame, [self.roi_polygon], True, (0, 255, 0), 3)  # Bright green, thick line
                 
-                # Fill the ROI with semi-transparent green
+                # Fill the ROI with semi-transparent green (more subtle)
                 overlay = vis_frame.copy()
                 cv2.fillPoly(overlay, [self.roi_polygon], (0, 200, 0, 50))  # Semi-transparent green
-                cv2.addWeighted(overlay, 0.2, vis_frame, 0.8, 0, vis_frame)
+                cv2.addWeighted(overlay, 0.15, vis_frame, 0.85, 0, vis_frame)  # More subtle transparency
                 
-                # Add a label
-                cv2.putText(vis_frame, "ROI", (self.roi_polygon[0][0], self.roi_polygon[0][1] - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                # Add a label at the first point of the ROI polygon
+                roi_x, roi_y = self.roi_polygon[0]
+                cv2.putText(vis_frame, "ROI", (roi_x, roi_y - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
+                cv2.putText(vis_frame, "ROI", (roi_x, roi_y - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 1)  # Green text
                 logger.debug("[TRACKER] Drawing ROI polygon on visualization frame")
             else:
                 logger.debug("[TRACKER] No ROI polygon defined")
