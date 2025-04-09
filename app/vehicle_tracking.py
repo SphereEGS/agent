@@ -129,12 +129,11 @@ class VehicleTracker:
             # Create a copy of the original ROI
             scaled_roi = self.original_roi.copy()
             
-            # If we have the original and display dimensions from config, use those for precise scaling
-            if hasattr(self, 'original_dimensions') and self.original_dimensions and hasattr(self, 'display_dimensions') and self.display_dimensions:
+            # If we have the original dimensions from config, use those for precise scaling
+            if hasattr(self, 'original_dimensions') and self.original_dimensions:
                 orig_width, orig_height = self.original_dimensions
-                display_width, display_height = self.display_dimensions
                 
-                logger.debug(f"[TRACKER] Using dimensions from config - Original: {orig_width}x{orig_height}, Display: {display_width}x{display_height}")
+                logger.debug(f"[TRACKER] Using dimensions from config - Original: {orig_width}x{orig_height}, Frame: {frame_w}x{frame_h}")
                 
                 # Calculate direct scaling factors from original frame to current frame
                 scale_x = frame_w / orig_width
