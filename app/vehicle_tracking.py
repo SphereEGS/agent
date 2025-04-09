@@ -170,9 +170,13 @@ class VehicleTracker:
             # Draw plate if detected
             if track_id in self.detected_plates:
                 plate_text = self.detected_plates[track_id]
+                # Draw plate text with thicker font and brighter color for better visibility of Arabic characters
                 cv2.putText(vis_frame, f"Plate: {plate_text}",
                            (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX,
-                           0.6, (0, 0, 255), 2)  # Red for plate text
+                           0.7, (0, 0, 0), 3)  # Black outline
+                cv2.putText(vis_frame, f"Plate: {plate_text}",
+                           (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX,
+                           0.7, (0, 0, 255), 2)  # Red text
                 
                 # Update last recognized plate
                 self.last_recognized_plate = plate_text
@@ -185,15 +189,23 @@ class VehicleTracker:
             auth_status = "Authorized" if self.last_plate_authorized else "Not Authorized"
             auth_color = (0, 255, 0) if self.last_plate_authorized else (0, 0, 255)  # Green or Red
             
-            # Draw background rectangle for better visibility
-            cv2.rectangle(vis_frame, (10, h-70), (400, h-10), (0, 0, 0), -1)
-            cv2.rectangle(vis_frame, (10, h-70), (400, h-10), (255, 255, 255), 1)
+            # Draw larger background rectangle for better visibility of Arabic text
+            cv2.rectangle(vis_frame, (10, h-90), (450, h-10), (0, 0, 0), -1)
+            cv2.rectangle(vis_frame, (10, h-90), (450, h-10), (255, 255, 255), 2)
             
-            # Display last plate info
+            # Display last plate info with enhanced visibility for Arabic characters
+            # Add black outline first for better visibility
             cv2.putText(vis_frame, f"Last Plate: {self.last_recognized_plate}", 
-                       (20, h-45), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+                       (20, h-55), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 3)
+            # Then add white text
+            cv2.putText(vis_frame, f"Last Plate: {self.last_recognized_plate}", 
+                       (20, h-55), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+            
+            # Draw status with outline for better visibility
             cv2.putText(vis_frame, f"Status: {auth_status}", 
-                       (20, h-15), cv2.FONT_HERSHEY_SIMPLEX, 0.8, auth_color, 2)
+                       (20, h-25), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 3)  # Black outline
+            cv2.putText(vis_frame, f"Status: {auth_status}", 
+                       (20, h-25), cv2.FONT_HERSHEY_SIMPLEX, 0.9, auth_color, 2)  # Colored text
         
         return vis_frame
 
