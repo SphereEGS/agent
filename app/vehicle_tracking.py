@@ -375,12 +375,12 @@ class VehicleTracker:
                 except Exception as e:
                     logger.error(f"[TRACKER] Error processing detection boxes: {str(e)}")
             
-            # Return visualization frame without showing it
+            # Return the visualization frame without showing it
             return True, vis_frame
                             
         except Exception as e:
             logger.error(f"[TRACKER] Error during vehicle detection: {str(e)}")
-            # Still process the frame with ROI even if error occurs
+            # Still return the frame with ROI without showing it
             if frame is not None:
                 try:
                     error_frame = frame.copy()
