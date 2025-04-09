@@ -95,10 +95,13 @@ class VehicleTracker:
         try:
             # Get the current frame dimensions
             frame_h, frame_w = frame.shape[:2]
-            # Get the original frame dimensions from roi.py
-            original_w, original_h = 1920, 1080  # These are the dimensions from the CCTV camera
             
-            logger.debug(f"Scaling ROI from {original_w}x{original_h} to {frame_w}x{frame_h}")
+            # Original dimensions from config (these need to match the dimensions used when ROI was created)
+            # These values might need adjustment based on your specific configuration
+            original_w, original_h = 1920, 1080
+            
+            # Log detailed dimensions for debugging
+            logger.info(f"[TRACKER] ROI scaling: Original dimensions {original_w}x{original_h}, frame dimensions {frame_w}x{frame_h}")
             
             # Calculate scale factors
             scale_x = frame_w / original_w
@@ -111,7 +114,10 @@ class VehicleTracker:
             scaled_roi[:, 0] = (scaled_roi[:, 0] * scale_x).astype(np.int32)
             scaled_roi[:, 1] = (scaled_roi[:, 1] * scale_y).astype(np.int32)
             
-            logger.debug(f"Scaled ROI points: {scaled_roi.tolist()}")
+            # Debug log the scaled points
+            logger.info(f"[TRACKER] Scaled ROI: scale factors {scale_x:.4f}x{scale_y:.4f}")
+            logger.debug(f"[TRACKER] Original ROI: {self.original_roi.tolist()}")
+            logger.debug(f"[TRACKER] Scaled ROI: {scaled_roi.tolist()}")
             
             return scaled_roi
         except Exception as e:
@@ -180,32 +186,45 @@ class VehicleTracker:
                 
                 # Update last recognized plate
                 self.last_recognized_plate = plate_text
+                # Debug log to ensure we're seeing plate detections
+                logger.info(f"[TRACKER] Vehicle {track_id} has plate {plate_text}, updated last_recognized_plate")
                 # Check authorization (this is simplified, replace with your actual authorization logic)
                 self.last_plate_authorized = False  # Default to not authorized
         
-        # Display the last recognized plate at the lower left corner
+        # Always draw the last plate info section, even if empty
+        h, w = vis_frame.shape[:2]
+        
+        # Draw larger background rectangle for better visibility
+        cv2.rectangle(vis_frame, (10, h-90), (450, h-10), (0, 0, 0), -1)
+        cv2.rectangle(vis_frame, (10, h-90), (450, h-10), (255, 255, 255), 2)
+        
+        # Display last plate info or "No plate detected" message
         if hasattr(self, 'last_recognized_plate') and self.last_recognized_plate is not None:
-            h, w = vis_frame.shape[:2]
+            plate_text = self.last_recognized_plate
             auth_status = "Authorized" if self.last_plate_authorized else "Not Authorized"
             auth_color = (0, 255, 0) if self.last_plate_authorized else (0, 0, 255)  # Green or Red
             
-            # Draw larger background rectangle for better visibility of Arabic text
-            cv2.rectangle(vis_frame, (10, h-90), (450, h-10), (0, 0, 0), -1)
-            cv2.rectangle(vis_frame, (10, h-90), (450, h-10), (255, 255, 255), 2)
+            # Log that we're displaying the last recognized plate
+            logger.info(f"[TRACKER] Displaying last plate: {plate_text}, status: {auth_status}")
+        else:
+            # Show default message when no plate is detected
+            plate_text = "No plate detected"
+            auth_status = "N/A"
+            auth_color = (128, 128, 128)  # Gray for N/A
             
-            # Display last plate info with enhanced visibility for Arabic characters
-            # Add black outline first for better visibility
-            cv2.putText(vis_frame, f"Last Plate: {self.last_recognized_plate}", 
-                       (20, h-55), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 3)
-            # Then add white text
-            cv2.putText(vis_frame, f"Last Plate: {self.last_recognized_plate}", 
-                       (20, h-55), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
-            
-            # Draw status with outline for better visibility
-            cv2.putText(vis_frame, f"Status: {auth_status}", 
-                       (20, h-25), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 3)  # Black outline
-            cv2.putText(vis_frame, f"Status: {auth_status}", 
-                       (20, h-25), cv2.FONT_HERSHEY_SIMPLEX, 0.9, auth_color, 2)  # Colored text
+        # Always display plate info with enhanced visibility
+        # Add black outline first for better visibility
+        cv2.putText(vis_frame, f"Last Plate: {plate_text}", 
+                   (20, h-55), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 0), 3)
+        # Then add white text
+        cv2.putText(vis_frame, f"Last Plate: {plate_text}", 
+                   (20, h-55), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        
+        # Draw status with outline for better visibility
+        cv2.putText(vis_frame, f"Status: {auth_status}", 
+                   (20, h-25), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 3)  # Black outline
+        cv2.putText(vis_frame, f"Status: {auth_status}", 
+                   (20, h-25), cv2.FONT_HERSHEY_SIMPLEX, 0.9, auth_color, 2)  # Colored text
         
         return vis_frame
 

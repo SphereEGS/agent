@@ -117,9 +117,10 @@ class SpherexAgent:
                                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 
                                 # Update the authorization status for display
-                                if hasattr(self.vehicle_tracker, 'last_recognized_plate') and \
-                                   self.vehicle_tracker.last_recognized_plate == plate_text:
-                                    self.vehicle_tracker.last_plate_authorized = is_authorized
+                                # Make sure the vehicle tracker's last recognized plate is updated
+                                self.vehicle_tracker.last_recognized_plate = plate_text
+                                self.vehicle_tracker.last_plate_authorized = is_authorized
+                                logger.info(f"[AGENT] Updated last_recognized_plate to {plate_text}, auth: {is_authorized}")
                                 
                                 # Log the detection
                                 auth_status = "Authorized" if is_authorized else "Not Authorized"
@@ -154,8 +155,7 @@ class SpherexAgent:
                 if self.frame_count % 50 == 0:  # Less frequent logging for cooldown
                     logger.debug(f"[AGENT] In cooldown period, {self.detection_cooldown - time_since_last:.1f}s remaining")
         
-        # No need to display this window as we want to keep only the Detections window
-        # cv2.imshow('Camera Feed with Vehicle Detection', display_frame)
+        
         key = cv2.waitKey(1) & 0xFF
         
         # Allow quitting with 'q' key
