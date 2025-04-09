@@ -37,8 +37,13 @@ else:
     source_path = CAMERA_URL
     print(f"Attempting to connect to camera stream: {source_path}")
 
-# Connect to the source
-cap = cv2.VideoCapture(source_path)
+# Set RTSP transport to TCP for better reliability to match camera.py settings
+if isinstance(source_path, str) and source_path.startswith('rtsp://'):
+    os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp'
+    cap = cv2.VideoCapture(source_path, cv2.CAP_FFMPEG)
+else:
+    # Connect to the source
+    cap = cv2.VideoCapture(source_path)
 
 if not cap.isOpened():
     print(f"Failed to connect to: {source_path}")
@@ -60,13 +65,38 @@ if not ret:
     print("Error: Could not read frame from the source.")
     exit(1)
 
+# Get original frame dimensions
 original_width = original_frame.shape[1]
 original_height = original_frame.shape[0]
+print(f"Original frame dimensions: {original_width}x{original_height}")
 
-# Use the same target dimensions as the main application
+# Calculate the target dimensions using the same method as in camera.py
 target_width = FRAME_WIDTH
-scale_ratio = target_width / original_frame.shape[1]
-display_frame = cv2.resize(original_frame, (target_width, int(original_frame.shape[0] * scale_ratio)))
+target_height = FRAME_HEIGHT
+
+# Calculate aspect ratio preserving dimensions exactly as in camera.py
+aspect_ratio = original_width / original_height
+if aspect_ratio > (target_width / target_height):
+    # Image is wider than target
+    new_width = target_width
+    new_height = int(target_width / aspect_ratio)
+else:
+    # Image is taller than target
+    new_height = target_height
+    new_width = int(target_height * aspect_ratio)
+
+# Ensure dimensions are even numbers (required by some OpenCV operations)
+new_width = new_width - (new_width % 2)
+new_height = new_height - (new_height % 2)
+
+print(f"Target display dimensions: {new_width}x{new_height}")
+
+# Calculate scale ratios
+scale_width_ratio = new_width / original_width
+scale_height_ratio = new_height / original_height
+
+# Resize the frame using the dimensions calculated exactly as in camera.py
+display_frame = cv2.resize(original_frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
 
 polygon_points = []
 polygon_finished = False
@@ -108,24 +138,35 @@ while True:
         print("Exiting without saving ROI.")
         break
     if polygon_finished:
+        # Convert display coordinates back to original coordinates
         original_polygon_points = []
         for x, y in polygon_points:
-            original_x = int(x / scale_ratio)
-            original_y = int(y / scale_ratio)
+            # Use the same scale ratios to convert back
+            original_x = int(x / scale_width_ratio)
+            original_y = int(y / scale_height_ratio)
             original_polygon_points.append((original_x, original_y))
         
         # Print information for debugging
         print(f"Original frame dimensions: {original_width}x{original_height}")
         print(f"Display frame dimensions: {display_frame.shape[1]}x{display_frame.shape[0]}")
-        print(f"Scale ratio used: {scale_ratio}")
+        print(f"Scale width ratio: {scale_width_ratio}, height ratio: {scale_height_ratio}")
         print(f"Display polygon points: {polygon_points}")
         print(f"Original polygon points: {original_polygon_points}")
+        
+        # Also save the display polygon points for reference
+        config_data = {
+            "original_points": original_polygon_points,
+            "display_points": polygon_points,
+            "original_dimensions": [original_width, original_height],
+            "display_dimensions": [display_frame.shape[1], display_frame.shape[0]],
+            "scale_ratios": [scale_width_ratio, scale_height_ratio]
+        }
         
         # Save to config.json
         save_path = "config.json"
         with open(save_path, "w") as f:
-            json.dump(original_polygon_points, f)
-        print(f"Polygon points saved to {save_path}")
+            json.dump(config_data, f, indent=2)
+        print(f"ROI configuration saved to {save_path}")
         print("ROI has been saved successfully!")
         cv2.waitKey(1000)  # Wait a bit longer to show success
         break
