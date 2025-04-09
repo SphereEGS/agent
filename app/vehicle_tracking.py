@@ -387,18 +387,27 @@ class VehicleTracker:
                 except Exception as e:
                     logger.error(f"[TRACKER] Error processing detection boxes: {str(e)}")
             
-            # Return the visualization frame without showing it
+            # Display the visualization frame in the Detections window
+            cv2.imshow('Detections', vis_frame)
+            cv2.waitKey(1)
+            
+            # Return the visualization frame
             return True, vis_frame
                             
         except Exception as e:
             logger.error(f"[TRACKER] Error during vehicle detection: {str(e)}")
-            # Still return the frame with ROI without showing it
+            # Still return the frame with ROI and display it
             if frame is not None:
                 try:
                     error_frame = frame.copy()
                     if self.roi_polygon is not None:
                         cv2.polylines(error_frame, [self.roi_polygon], True, (0, 255, 0), 3)
                     cv2.putText(error_frame, "Detection error", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                    
+                    # Display the error frame in the Detections window
+                    cv2.imshow('Detections', error_frame)
+                    cv2.waitKey(1)
+                    
                     return False, error_frame
                 except:
                     pass

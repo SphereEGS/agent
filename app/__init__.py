@@ -154,8 +154,8 @@ class SpherexAgent:
                 if self.frame_count % 50 == 0:  # Less frequent logging for cooldown
                     logger.debug(f"[AGENT] In cooldown period, {self.detection_cooldown - time_since_last:.1f}s remaining")
         
-        # Always display the current frame
-        cv2.imshow('Camera Feed with Vehicle Detection', display_frame)
+        # No need to display this window as we want to keep only the Detections window
+        # cv2.imshow('Camera Feed with Vehicle Detection', display_frame)
         key = cv2.waitKey(1) & 0xFF
         
         # Allow quitting with 'q' key
