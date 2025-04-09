@@ -284,7 +284,8 @@ def main():
             processed_frame = tracker.detect_and_track(resized_frame, (orig_width, orig_height))
             
             out.write(processed_frame)
-            cv2.imshow("Vehicle and License Plate Detection", processed_frame)
+            # Remove window display for single window mode
+            # cv2.imshow("Vehicle and License Plate Detection", processed_frame)
             
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
