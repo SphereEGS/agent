@@ -192,10 +192,6 @@ class VehicleTracker:
     def visualize_detection(self, frame, boxes, track_ids, class_ids):
         """Draw detection boxes, IDs and plates on frame"""
         vis_frame = frame.copy()
-        
-        # We don't need to draw ROI here as it's already drawn in detect_vehicles
-        # This avoids drawing the ROI twice with different styles
-
         # Draw vehicle boxes and info
         for box, track_id, class_id in zip(boxes, track_ids, class_ids):
             if class_id not in VEHICLE_CLASSES:

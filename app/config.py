@@ -50,7 +50,7 @@ logger.info(f"Operating in zone: {ZONE}")
 
 # Camera input sources
 CAMERA_SOURCES = {
-    "cctv": "rtsp://192.168.0.3:8554/stream",  # Default CCTV stream
+    "cctv": "rtsp://test:123456789A@10.0.40.11:554/Streaming/channels/801",  # Default CCTV stream
     "webcam": "0",                             # Default webcam
     "video_file": "input/test_video3.mov"      # Test video file
 }
