@@ -1,30 +1,47 @@
 import requests
 import urllib3
-import time
 import threading
+import socketio  # python-socketio client
 
-from app.config import CONTROLLERS, logger
+from app.config import CONTROLLERS, logger, SOCKETIO_SERVER, SOCKETIO_NAMESPACE
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class GateControl:
-    def __init__(self, gate_type="entry"):
-        self.gate_type = gate_type
+    def __init__(self, gate_type: str = "entry"):
+        self.gate_type: str = gate_type
         if gate_type not in CONTROLLERS or not CONTROLLERS[gate_type]["ip"]:
             logger.warning(f"No controller configuration for {gate_type}. Gate control disabled.")
-            self.enabled = False
+            self.enabled: bool = False
             return
-            
-        self.enabled = True
-        controller = CONTROLLERS[gate_type]
-        self.base_url = f"https://{controller['ip']}/api"
-        self.door_id = controller["door_id"]
-        self.username = controller["user"]
-        self.password = controller["password"]
-        self.session_id = None
+
+        self.enabled: bool = True
+        controller: dict = CONTROLLERS[gate_type]
+        self.base_url: str = f"https://{controller['ip']}/api"
+        self.door_id: str = controller["door_id"]
+        self.username: str = controller["user"]
+        self.password: str = controller["password"]
+        self.session_id: str | None = None
         self.lock = threading.Lock()
+        self.sio: socketio.Client | None = None
+        self._connect_socketio()
         self.login()
+
+    def _connect_socketio(self):
+        """Connect to local Socket.IO server and emit 'connect_agent' event with hardcoded agent and gate."""
+        try:
+            self.sio = socketio.Client(logger=True, engineio_logger=True)
+            self.sio.connect(SOCKETIO_SERVER, namespaces=[SOCKETIO_NAMESPACE])
+            payload = {
+                "agent": "AGENT-123",
+                "gates": [self.gate_type]
+            }
+            self.sio.emit('connect_agent', payload, namespace='/spherex')
+            logger.info(f"Emitted 'connect_agent' event with payload {payload} to Socket.IO server at localhost:9001/spherex and staying connected")
+        except Exception as e:
+            logger.error(f"Socket.IO connection failed: {e}")
+            self.sio = None
 
     def login(self):
         if not self.enabled:
@@ -50,7 +67,7 @@ class GateControl:
         if not self.enabled:
             logger.info(f"{action} skipped - {self.gate_type} gate control disabled")
             return
-            
+
         url = f"{self.base_url}/doors/{endpoint}"
         payload = {
             "DoorCollection": {

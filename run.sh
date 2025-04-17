@@ -17,9 +17,9 @@ echo -e "${YELLOW}Current camera settings:${NC}"
 cat .env | grep "CAMERA_URL" | grep -v "^#"
 
 # Activate virtual environment
-if [ -d "venv" ]; then
+if [ -d ".venv" ]; then
     echo -e "${CYAN}Activating virtual environment...${NC}"
-    source venv/bin/activate
+    source .venv/bin/activate
 else
     echo -e "${RED}Error: Virtual environment not found.${NC}"
     exit 1
