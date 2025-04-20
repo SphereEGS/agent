@@ -283,7 +283,37 @@ class SpherexAgent:
                 break  # Don't exceed grid size
             
             frame = frames[camera_id]
-            resized_frame = cv2.resize(frame, (target_w, target_h))
+            
+            # Make sure we're preserving aspect ratio properly when resizing
+            current_h, current_w = frame.shape[:2]
+            aspect_ratio = current_w / current_h
+            
+            # Calculate dimensions that preserve aspect ratio
+            if aspect_ratio > (target_w / target_h):
+                # Image is wider than target
+                resize_w = target_w
+                resize_h = int(target_w / aspect_ratio)
+            else:
+                # Image is taller than target
+                resize_h = target_h
+                resize_w = int(target_h * aspect_ratio)
+                
+            # Ensure dimensions are even numbers
+            resize_w = resize_w - (resize_w % 2)
+            resize_h = resize_h - (resize_h % 2)
+            
+            # Resize the frame preserving aspect ratio
+            resized_frame = cv2.resize(frame, (resize_w, resize_h), interpolation=cv2.INTER_LINEAR)
+            
+            # Create a full-size cell with black background
+            cell = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+            
+            # Calculate position to center the resized frame in the cell
+            y_offset = (target_h - resize_h) // 2
+            x_offset = (target_w - resize_w) // 2
+            
+            # Place the resized frame in the cell
+            cell[y_offset:y_offset+resize_h, x_offset:x_offset+resize_w] = resized_frame
             
             row = i // grid_cols
             col = i % grid_cols
@@ -293,7 +323,7 @@ class SpherexAgent:
             x_start = col * target_w
             x_end = x_start + target_w
             
-            grid_view[y_start:y_end, x_start:x_end] = resized_frame
+            grid_view[y_start:y_end, x_start:x_end] = cell
         
         # Add grid title
         cv2.putText(grid_view, f"SpherexAgent - Monitoring {frame_count} Cameras", 
