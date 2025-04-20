@@ -5,7 +5,21 @@ import os
 import sys
 import argparse
 import numpy as np
-from app.config import FRAME_WIDTH, FRAME_HEIGHT
+from app.config import FRAME_WIDTH, FRAME_HEIGHT, logger
+
+def save_original_frame(original_frame, camera_id):
+    """Save original frame for reference"""
+    os.makedirs("debug", exist_ok=True)
+    filename = f"debug/original_frame_{camera_id}.jpg"
+    cv2.imwrite(filename, original_frame)
+    print(f"Saved original frame to {filename}")
+
+def save_resized_frame(resized_frame, camera_id):
+    """Save resized frame for reference"""
+    os.makedirs("debug", exist_ok=True)
+    filename = f"debug/resized_frame_{camera_id}.jpg"
+    cv2.imwrite(filename, resized_frame)
+    print(f"Saved resized frame to {filename}")
 
 def setup_roi_tool():
     # Parse command line arguments
@@ -14,15 +28,20 @@ def setup_roi_tool():
     parser.add_argument('--roi-type', type=str, default="lpr", choices=['lpr', 'detection'], 
                         help='ROI type to configure (lpr or detection)')
     parser.add_argument('--source', type=str, help='Override camera source (optional)')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode with frame saving')
     args = parser.parse_args()
     
     load_dotenv()
+    
+    debug_mode = args.debug
     
     # Get video source from environment variables or use default
     if args.source:
         CAMERA_URL = args.source
     else:
-        CAMERA_URL = os.getenv("CAMERA_URL", "0")  # Default to local webcam
+        # Look for camera-specific URL first
+        camera_env_var = f"CAMERA_URL_{args.camera.upper()}" if args.camera.lower() != "main" else "CAMERA_URL"
+        CAMERA_URL = os.getenv(camera_env_var, os.getenv("CAMERA_URL", "0"))  # Default to local webcam
     
     camera_id = args.camera
     roi_type = args.roi_type
@@ -92,6 +111,10 @@ def setup_roi_tool():
     original_height = original_frame.shape[0]
     print(f"Original frame dimensions: {original_width}x{original_height}")
 
+    # Save original frame if debug mode is enabled
+    if debug_mode:
+        save_original_frame(original_frame, camera_id)
+
     # Calculate the target dimensions using the same method as in camera.py
     target_width = FRAME_WIDTH
     target_height = FRAME_HEIGHT
@@ -112,13 +135,19 @@ def setup_roi_tool():
     new_height = new_height - (new_height % 2)
 
     print(f"Target display dimensions: {new_width}x{new_height}")
+    print(f"Aspect ratio: {aspect_ratio:.3f}")
 
-    # Calculate scale ratios
+    # Calculate scale ratios for converting between original and resized coordinates
     scale_width_ratio = new_width / original_width
     scale_height_ratio = new_height / original_height
+    print(f"Scale factors: width={scale_width_ratio:.3f}, height={scale_height_ratio:.3f}")
 
     # Resize the frame using the dimensions calculated exactly as in camera.py
     display_frame = cv2.resize(original_frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+    
+    # Save resized frame if debug mode is enabled
+    if debug_mode:
+        save_resized_frame(display_frame, camera_id)
 
     # Load existing ROIs to display as reference
     existing_roi_points = []
@@ -136,6 +165,7 @@ def setup_roi_tool():
                     display_x = int(x * scale_width_ratio)
                     display_y = int(y * scale_height_ratio)
                     existing_roi_points[i] = (display_x, display_y)
+                print(f"Loaded existing LPR ROI with {len(existing_roi_points)} points")
             elif roi_type == "detection" and "detection_roi" in config_data:
                 existing_roi_points = config_data["detection_roi"]["original_points"]
                 # Convert original coordinates to display coordinates
@@ -143,6 +173,7 @@ def setup_roi_tool():
                     display_x = int(x * scale_width_ratio)
                     display_y = int(y * scale_height_ratio)
                     existing_roi_points[i] = (display_x, display_y)
+                print(f"Loaded existing Detection ROI with {len(existing_roi_points)} points")
                     
             # Load the other ROI type for reference
             other_type = "detection" if roi_type == "lpr" else "lpr"
@@ -153,6 +184,7 @@ def setup_roi_tool():
                     display_x = int(x * scale_width_ratio)
                     display_y = int(y * scale_height_ratio)
                     other_roi_points[i] = (display_x, display_y)
+                print(f"Loaded other (LPR) ROI with {len(other_roi_points)} points for reference")
             elif other_type == "detection" and "detection_roi" in config_data:
                 other_roi_points = config_data["detection_roi"]["original_points"]
                 # Convert original coordinates to display coordinates
@@ -160,6 +192,7 @@ def setup_roi_tool():
                     display_x = int(x * scale_width_ratio)
                     display_y = int(y * scale_height_ratio)
                     other_roi_points[i] = (display_x, display_y)
+                print(f"Loaded other (Detection) ROI with {len(other_roi_points)} points for reference")
                 
     except Exception as e:
         print(f"Warning: Could not load existing ROI: {e}")
@@ -175,9 +208,15 @@ def setup_roi_tool():
                 polygon_points = []
                 polygon_finished = False
             polygon_points.append((x, y))
+            print(f"Added point: ({x}, {y}) - display coordinates")
+            # Convert to original image coordinates for reference
+            orig_x = int(x / scale_width_ratio)
+            orig_y = int(y / scale_height_ratio)
+            print(f"  -> Original coordinates: ({orig_x}, {orig_y})")
         elif event == cv2.EVENT_RBUTTONDOWN:
             if len(polygon_points) >= 3:
                 polygon_finished = True
+                print(f"Finished polygon with {len(polygon_points)} points")
             else:
                 print("Need at least 3 points to form a polygon.")
 
@@ -194,13 +233,23 @@ def setup_roi_tool():
     print("  - Right-click to complete the polygon (minimum 3 points).")
     print("  - Press 'Esc' to exit without saving.")
     print("  - Press 'S' to save the ROI.")
-    print(f"Original frame: {original_width}x{original_height}, Display frame: {display_frame.shape[1]}x{display_frame.shape[0]}")
+    print(f"Original frame: {original_width}x{original_height}, Display frame: {new_width}x{new_height}")
 
     while True:
         frame_display = display_frame.copy()
         
         # Draw the other ROI type if available (for reference)
         if other_roi_points:
+            # Create transparent overlay for filling
+            overlay = frame_display.copy()
+            other_polygon = np.array(other_roi_points)
+            other_fill_color = (192, 0, 0) if roi_type == "lpr" else (0, 0, 192)  # Opposite colors
+            cv2.fillPoly(overlay, [other_polygon], other_fill_color)
+            # Apply transparency
+            alpha = 0.3
+            cv2.addWeighted(overlay, alpha, frame_display, 1 - alpha, 0, frame_display)
+            
+            # Draw outline
             other_polygon = [np.array(other_roi_points)]
             cv2.polylines(frame_display, other_polygon, True, other_roi_color, 1)
             # Label the ROI
@@ -211,6 +260,17 @@ def setup_roi_tool():
 
         # Draw our current ROI
         if polygon_points:
+            # Create transparent overlay for current ROI
+            if len(polygon_points) >= 3:
+                overlay = frame_display.copy()
+                current_polygon = np.array(polygon_points)
+                current_fill_color = (0, 0, 192) if roi_type == "lpr" else (192, 0, 0)
+                cv2.fillPoly(overlay, [current_polygon], current_fill_color)
+                # Apply transparency
+                alpha = 0.3
+                cv2.addWeighted(overlay, alpha, frame_display, 1 - alpha, 0, frame_display)
+            
+            # Draw points and lines
             for pt in polygon_points:
                 cv2.circle(frame_display, pt, 4, roi_color, -1)
             for i in range(1, len(polygon_points)):
@@ -223,6 +283,14 @@ def setup_roi_tool():
             cv2.putText(frame_display, roi_type_name, 
                        (polygon_points[0][0], polygon_points[0][1] - 10),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, roi_color, 2)
+
+        # Add frame dimensions and info
+        cv2.putText(frame_display, f"Camera: {camera_id} | {new_width}x{new_height} ({original_width}x{original_height})", 
+                   (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                   
+        # Add current settings from .env
+        cv2.putText(frame_display, f"FRAME_WIDTH={FRAME_WIDTH}, FRAME_HEIGHT={FRAME_HEIGHT}", 
+                   (10, new_height - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         cv2.imshow(window_name, frame_display)
         key = cv2.waitKey(1) & 0xFF
@@ -258,12 +326,20 @@ def setup_roi_tool():
                 
                 # Save original dimensions
                 config_data["original_dimensions"] = [original_width, original_height]
+                config_data["target_dimensions"] = [new_width, new_height]
+                config_data["scale_factors"] = {
+                    "width": float(scale_width_ratio),
+                    "height": float(scale_height_ratio)
+                }
                 
                 # Save to file
                 with open(config_file, 'w') as f:
                     json.dump(config_data, f, indent=2)
                 
                 print(f"Saved {roi_type} ROI to {config_file}")
+                # Save the config file path and full parameters for reference
+                print(f"Full configuration saved to: {os.path.abspath(config_file)}")
+                print(f"Scale factors: width={scale_width_ratio:.3f}, height={scale_height_ratio:.3f}")
                 break
                 
             except Exception as e:

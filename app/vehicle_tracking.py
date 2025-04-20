@@ -146,6 +146,11 @@ class VehicleTracker:
             logger.error(f"[VEHICLE_TRACKER:{self.camera_id}] YOLO model not loaded")
             return False, frame
         
+        # Log frame dimensions periodically for debugging
+        if self.detection_count % 100 == 0:
+            height, width = frame.shape[:2]
+            logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] Frame dimensions: {width}x{height}")
+        
         # Create a copy of the frame for visualization
         vis_frame = frame.copy()
         
@@ -177,6 +182,10 @@ class VehicleTracker:
             self.detection_count += 1
             detection_start = time.time()
             
+            # Log detection attempt periodically
+            if self.detection_count % 10 == 0:
+                logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] Running detection #{self.detection_count}, frame size: {frame.shape[1]}x{frame.shape[0]}")
+            
             # Perform detection
             results = self.model.track(
                 source=frame,
@@ -190,8 +199,16 @@ class VehicleTracker:
             detection_time = time.time() - detection_start
             self.last_detection_time = detection_time
             
+            # Log detection performance periodically
+            if self.detection_count % 10 == 0:
+                logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] Detection took {detection_time:.3f}s")
+            
             # No detections
             if len(results) == 0 or not hasattr(results[0], 'boxes'):
+                # Log when no detections occur periodically
+                if self.detection_count % 50 == 0:
+                    logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] No detections in frame")
+                    
                 # Just draw ROIs on the frame and return
                 vis_frame = self.roi_manager.draw_roi(vis_frame, roi_type="both")
                 return False, vis_frame
@@ -200,10 +217,20 @@ class VehicleTracker:
             boxes = results[0].boxes
             vehicle_detected = False
             
+            # Log number of detections periodically
+            if self.detection_count % 10 == 0:
+                logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] Detected {len(boxes)} object(s)")
+            
             # Draw ROIs on the visualization frame
             vis_frame = self.roi_manager.draw_roi(vis_frame, roi_type="both")
             
+            # Process each bounding box
+            vehicles_in_roi = 0
+            vehicles_total = 0
+            
             for box in boxes:
+                vehicles_total += 1
+                
                 # Get tracking ID if available
                 if hasattr(box, 'id') and box.id is not None:
                     track_id = int(box.id.item())
@@ -213,6 +240,17 @@ class VehicleTracker:
                 
                 # Get bounding box coordinates
                 x1, y1, x2, y2 = [int(x) for x in box.xyxy[0].tolist()]
+                
+                # Get confidence score
+                conf = float(box.conf[0].item()) if hasattr(box, 'conf') else 0.0
+                
+                # Get class ID and name
+                cls_id = int(box.cls[0].item()) if hasattr(box, 'cls') else -1
+                cls_name = self.model.names[cls_id] if hasattr(self.model, 'names') else "unknown"
+                
+                # Log detection details periodically
+                if self.detection_count % 50 == 0:
+                    logger.debug(f"[VEHICLE_TRACKER:{self.camera_id}] Detected {cls_name} (ID: {track_id}) at {x1},{y1},{x2},{y2} with confidence {conf:.2f}")
                 
                 # Check if the vehicle is in the detection ROI
                 in_detection_roi = True  # Temporarily set to True for testing
@@ -227,6 +265,7 @@ class VehicleTracker:
                 
                 # Only track if in detection ROI
                 if in_detection_roi:
+                    vehicles_in_roi += 1
                     vehicle_detected = True
                     
                     # Update or add vehicle to tracking dictionary
@@ -236,12 +275,16 @@ class VehicleTracker:
                             'last_seen': current_time,
                             'bbox': [x1, y1, x2, y2],
                             'in_lpr_roi': in_lpr_roi,
-                            'plate_processed': False
+                            'plate_processed': False,
+                            'class': cls_name,
+                            'confidence': conf
                         }
                     else:
                         self.vehicles[track_id]['last_seen'] = current_time
                         self.vehicles[track_id]['bbox'] = [x1, y1, x2, y2]
                         self.vehicles[track_id]['in_lpr_roi'] = in_lpr_roi
+                        self.vehicles[track_id]['class'] = cls_name
+                        self.vehicles[track_id]['confidence'] = conf
                     
                     # Set color based on detection ROI status
                     color = (0, 255, 0)  # Green for tracked vehicles
@@ -259,6 +302,9 @@ class VehicleTracker:
                             self.vehicles[track_id]['plate_processed'] = True
                             self.detected_plates[track_id] = plate_text
                             
+                            # Log plate detection
+                            logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] Detected plate: {plate_text} on vehicle {track_id} ({cls_name})")
+                            
                             # Draw license plate text on the vehicle
                             cv2.putText(vis_frame, f"Plate: {plate_text}",
                                       (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX,
@@ -271,9 +317,13 @@ class VehicleTracker:
                     cv2.rectangle(vis_frame, (x1, y1), (x2, y2), color, 2)
                     
                     # Add tracking ID
-                    cv2.putText(vis_frame, f"ID: {track_id}",
+                    cv2.putText(vis_frame, f"ID: {track_id} ({cls_name})",
                               (x1, y1 - 30), cv2.FONT_HERSHEY_SIMPLEX,
                               0.5, color, 2)
+            
+            # Log summary of detected vehicles periodically
+            if self.detection_count % 50 == 0 and vehicles_total > 0:
+                logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] Detection summary: {vehicles_in_roi}/{vehicles_total} vehicles in ROI")
             
             # Clean up vehicles that haven't been seen for a while
             current_time = time.time()
