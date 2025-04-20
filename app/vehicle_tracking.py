@@ -4,6 +4,7 @@ import time
 from collections import defaultdict
 import torch
 from ultralytics import YOLO
+import os
 
 from .config import logger, YOLO_MODEL_PATH, DETECTION_CONF, DETECTION_IOU
 from .roi_manager import ROIManager
@@ -52,10 +53,25 @@ class VehicleTracker:
         """Load YOLO detection model"""
         try:
             logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] Loading YOLO model from {YOLO_MODEL_PATH}")
+            
+            # Check if the model file exists
+            if not os.path.exists(YOLO_MODEL_PATH):
+                logger.error(f"[VEHICLE_TRACKER:{self.camera_id}] YOLO model file not found: {YOLO_MODEL_PATH}")
+                self.model = None
+                return
+            
+            # Load the model
             self.model = YOLO(YOLO_MODEL_PATH)
+            
+            # Log model information
             logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] YOLO model loaded successfully")
+            logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] Model type: {type(self.model).__name__}")
+            logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] Detection confidence: {self.conf_threshold}")
+            logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] IOU threshold: {self.iou_threshold}")
         except Exception as e:
             logger.error(f"[VEHICLE_TRACKER:{self.camera_id}] Error loading YOLO model: {str(e)}")
+            import traceback
+            logger.error(f"[VEHICLE_TRACKER:{self.camera_id}] {traceback.format_exc()}")
             self.model = None
     
     def check_detection_zone(self, frame):
@@ -134,7 +150,8 @@ class VehicleTracker:
         vis_frame = frame.copy()
         
         # Check if there's activity in the detection zone
-        activity_detected = self.check_detection_zone(frame)
+        # activity_detected = self.check_detection_zone(frame)
+        activity_detected = True  # Always set to True for testing
         
         # Update detection state
         current_time = time.time()
@@ -149,11 +166,11 @@ class VehicleTracker:
                 logger.info(f"[VEHICLE_TRACKER:{self.camera_id}] No activity for {self.detection_duration}s, deactivating detection")
                 self.detection_active = False
         
-        # Skip detection if not active
-        if not self.detection_active:
-            # Just draw ROIs on the frame and return
-            vis_frame = self.roi_manager.draw_roi(vis_frame, roi_type="both")
-            return False, vis_frame
+        # Skip detection if not active - TEMPORARILY DISABLED FOR TESTING
+        # if not self.detection_active:
+        #     # Just draw ROIs on the frame and return
+        #     vis_frame = self.roi_manager.draw_roi(vis_frame, roi_type="both")
+        #     return False, vis_frame
         
         # Run detection model
         try:
@@ -198,9 +215,10 @@ class VehicleTracker:
                 x1, y1, x2, y2 = [int(x) for x in box.xyxy[0].tolist()]
                 
                 # Check if the vehicle is in the detection ROI
-                in_detection_roi = self.roi_manager.is_object_in_roi(
-                    [x1, y1, x2, y2], roi_type="detection"
-                )
+                in_detection_roi = True  # Temporarily set to True for testing
+                # in_detection_roi = self.roi_manager.is_object_in_roi(
+                #     [x1, y1, x2, y2], roi_type="detection"
+                # )
                 
                 # Check if the vehicle is in the LPR ROI
                 in_lpr_roi = self.roi_manager.is_object_in_roi(

@@ -118,7 +118,7 @@ def setup_roi_tool():
     scale_height_ratio = new_height / original_height
 
     # Resize the frame using the dimensions calculated exactly as in camera.py
-    display_frame = cv2.resize(original_frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+    #display_frame = cv2.resize(original_frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
 
     # Load existing ROIs to display as reference
     existing_roi_points = []
