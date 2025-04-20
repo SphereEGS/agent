@@ -29,11 +29,17 @@ def setup_roi_tool():
                         help='ROI type to configure (lpr or detection)')
     parser.add_argument('--source', type=str, help='Override camera source (optional)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode with frame saving')
+    parser.add_argument('--display-width', type=int, default=1280, help='Display window width')
+    parser.add_argument('--display-height', type=int, default=960, help='Display window height')
+    parser.add_argument('--preserve-full-frame', action='store_true', help='Show full frame without cropping')
     args = parser.parse_args()
     
     load_dotenv()
     
     debug_mode = args.debug
+    display_width = args.display_width
+    display_height = args.display_height
+    preserve_full_frame = args.preserve_full_frame
     
     # Get video source from environment variables or use default
     if args.source:
@@ -115,26 +121,46 @@ def setup_roi_tool():
     if debug_mode:
         save_original_frame(original_frame, camera_id)
 
-    # Calculate the target dimensions using the same method as in camera.py
-    target_width = FRAME_WIDTH
-    target_height = FRAME_HEIGHT
-
-    # Calculate aspect ratio preserving dimensions exactly as in camera.py
-    aspect_ratio = original_width / original_height
-    if aspect_ratio > (target_width / target_height):
-        # Image is wider than target
-        new_width = target_width
-        new_height = int(target_width / aspect_ratio)
+    # Calculate the target dimensions
+    if preserve_full_frame:
+        # Option 1: Resize to fit display window while preserving aspect ratio
+        aspect_ratio = original_width / original_height
+        if aspect_ratio > (display_width / display_height):
+            # Image is wider than display
+            new_width = display_width
+            new_height = int(display_width / aspect_ratio)
+        else:
+            # Image is taller than display
+            new_height = display_height
+            new_width = int(display_height * aspect_ratio)
+            
+        # Ensure dimensions are even numbers
+        new_width = new_width - (new_width % 2)
+        new_height = new_height - (new_height % 2)
+        
+        print(f"Display dimensions (preserving full frame): {new_width}x{new_height}")
     else:
-        # Image is taller than target
-        new_height = target_height
-        new_width = int(target_height * aspect_ratio)
+        # Option 2: Use dimensions from .env for consistency with runtime processing
+        target_width = FRAME_WIDTH
+        target_height = FRAME_HEIGHT
 
-    # Ensure dimensions are even numbers (required by some OpenCV operations)
-    new_width = new_width - (new_width % 2)
-    new_height = new_height - (new_height % 2)
+        # Calculate aspect ratio preserving dimensions as in camera.py
+        aspect_ratio = original_width / original_height
+        if aspect_ratio > (target_width / target_height):
+            # Image is wider than target
+            new_width = target_width
+            new_height = int(target_width / aspect_ratio)
+        else:
+            # Image is taller than target
+            new_height = target_height
+            new_width = int(target_height * aspect_ratio)
 
-    print(f"Target display dimensions: {new_width}x{new_height}")
+        # Ensure dimensions are even numbers
+        new_width = new_width - (new_width % 2)
+        new_height = new_height - (new_height % 2)
+        
+        print(f"Target processing dimensions: {new_width}x{new_height}")
+
     print(f"Aspect ratio: {aspect_ratio:.3f}")
 
     # Calculate scale ratios for converting between original and resized coordinates
@@ -142,12 +168,17 @@ def setup_roi_tool():
     scale_height_ratio = new_height / original_height
     print(f"Scale factors: width={scale_width_ratio:.3f}, height={scale_height_ratio:.3f}")
 
-    # Resize the frame using the dimensions calculated exactly as in camera.py
+    # Resize the frame
     display_frame = cv2.resize(original_frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
     
     # Save resized frame if debug mode is enabled
     if debug_mode:
         save_resized_frame(display_frame, camera_id)
+
+    # Also include the processing target dimensions for reference
+    processing_width = FRAME_WIDTH
+    processing_height = FRAME_HEIGHT
+    print(f"Runtime processing dimensions from .env: {processing_width}x{processing_height}")
 
     # Load existing ROIs to display as reference
     existing_roi_points = []
@@ -223,8 +254,12 @@ def setup_roi_tool():
     roi_color = (0, 0, 255) if roi_type == "lpr" else (255, 0, 0)
     other_roi_color = (255, 0, 0) if roi_type == "lpr" else (0, 0, 255)
     
+    # Create resizable window
     window_name = f"Draw {roi_type.upper()} ROI for {camera_id} - Left Click: add point, Right Click: finish, Esc: exit"
-    cv2.namedWindow(window_name)
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    
+    # Set initial window size
+    cv2.resizeWindow(window_name, new_width, new_height)
     cv2.setMouseCallback(window_name, mouse_callback)
 
     print("Instructions:")
