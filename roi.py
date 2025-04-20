@@ -32,6 +32,7 @@ def setup_roi_tool():
     parser.add_argument('--display-width', type=int, default=1280, help='Display window width')
     parser.add_argument('--display-height', type=int, default=960, help='Display window height')
     parser.add_argument('--preserve-full-frame', action='store_true', help='Show full frame without cropping')
+    parser.add_argument('--grid', action='store_true', help='Display in grid layout')
     args = parser.parse_args()
     
     load_dotenv()
@@ -40,6 +41,7 @@ def setup_roi_tool():
     display_width = args.display_width
     display_height = args.display_height
     preserve_full_frame = args.preserve_full_frame
+    use_grid = args.grid
     
     # Get video source from environment variables or use default
     if args.source:
@@ -327,7 +329,13 @@ def setup_roi_tool():
         cv2.putText(frame_display, f"FRAME_WIDTH={FRAME_WIDTH}, FRAME_HEIGHT={FRAME_HEIGHT}", 
                    (10, new_height - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        cv2.imshow(window_name, frame_display)
+        if use_grid:
+            # Create a grid view similar to the main application
+            grid_view = create_grid_view({camera_id: frame_display})
+            cv2.imshow(window_name, grid_view)
+        else:
+            cv2.imshow(window_name, frame_display)
+            
         key = cv2.waitKey(1) & 0xFF
         
         if key == 27:  # ESC key
@@ -382,6 +390,102 @@ def setup_roi_tool():
                 break
 
     cv2.destroyAllWindows()
+
+def create_grid_view(frames):
+    """
+    Create a grid view from multiple camera frames
+    
+    Args:
+        frames: Dictionary of {camera_id: frame}
+    
+    Returns:
+        Combined grid frame
+    """
+    # Get the size of frames and count
+    frame_count = len(frames)
+    if frame_count == 0:
+        return None
+    
+    # Determine grid dimensions based on number of cameras
+    if frame_count == 1:
+        grid_cols, grid_rows = 1, 1
+    elif frame_count <= 4:
+        grid_cols, grid_rows = 2, 2
+    elif frame_count <= 9:
+        grid_cols, grid_rows = 3, 3
+    else:
+        grid_cols, grid_rows = 4, 3  # Max 12 cameras
+    
+    # Get dimensions from first frame
+    sample_frame = next(iter(frames.values()))
+    frame_h, frame_w = sample_frame.shape[:2]
+    
+    # Calculate target size for each grid cell
+    # We'll resize all frames to this size
+    target_w = min(480, frame_w)
+    target_h = int(target_w * frame_h / frame_w)
+    
+    # Create black canvas for the grid
+    grid_width = target_w * grid_cols
+    grid_height = target_h * grid_rows
+    grid_view = np.zeros((grid_height, grid_width, 3), dtype=np.uint8)
+    
+    # Sort camera IDs to maintain consistent positions
+    camera_ids = sorted(frames.keys())
+    
+    # Place frames in grid
+    for i, camera_id in enumerate(camera_ids):
+        if i >= grid_rows * grid_cols:
+            break  # Don't exceed grid size
+        
+        frame = frames[camera_id]
+        
+        # Make sure we're preserving aspect ratio properly when resizing
+        current_h, current_w = frame.shape[:2]
+        aspect_ratio = current_w / current_h
+        
+        # Calculate dimensions that preserve aspect ratio
+        if aspect_ratio > (target_w / target_h):
+            # Image is wider than target
+            resize_w = target_w
+            resize_h = int(target_w / aspect_ratio)
+        else:
+            # Image is taller than target
+            resize_h = target_h
+            resize_w = int(target_h * aspect_ratio)
+            
+        # Ensure dimensions are even numbers
+        resize_w = resize_w - (resize_w % 2)
+        resize_h = resize_h - (resize_h % 2)
+        
+        # Resize the frame preserving aspect ratio
+        resized_frame = cv2.resize(frame, (resize_w, resize_h), interpolation=cv2.INTER_LINEAR)
+        
+        # Create a full-size cell with black background
+        cell = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+        
+        # Calculate position to center the resized frame in the cell
+        y_offset = (target_h - resize_h) // 2
+        x_offset = (target_w - resize_w) // 2
+        
+        # Place the resized frame in the cell
+        cell[y_offset:y_offset+resize_h, x_offset:x_offset+resize_w] = resized_frame
+        
+        row = i // grid_cols
+        col = i % grid_cols
+        
+        y_start = row * target_h
+        y_end = y_start + target_h
+        x_start = col * target_w
+        x_end = x_start + target_w
+        
+        grid_view[y_start:y_end, x_start:x_end] = cell
+    
+    # Add grid title
+    cv2.putText(grid_view, f"ROI Configuration - {frame_count} Cameras", 
+               (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    
+    return grid_view
 
 if __name__ == "__main__":
     setup_roi_tool()
