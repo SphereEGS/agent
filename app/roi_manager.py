@@ -172,18 +172,36 @@ class ROIManager:
             
         vis_frame = frame.copy()
         
+        # Create a mask for ROI highlighting with transparency
+        h, w = frame.shape[:2]
+        overlay = np.zeros((h, w, 3), dtype=np.uint8)
+        
         # Draw LPR ROI
         if (roi_type == "lpr" or roi_type == "both") and self.lpr_roi_polygon is not None:
+            # Fill the polygon with a semi-transparent red
+            lpr_fill_color = (0, 0, 192)  # Red (B, G, R)
+            cv2.fillPoly(overlay, [self.lpr_roi_polygon], lpr_fill_color)
+            
+            # Draw the outline on the main frame
             cv2.polylines(vis_frame, [self.lpr_roi_polygon], True, (0, 0, 255), 2)
             cv2.putText(vis_frame, "LPR Zone", 
-                        (self.lpr_roi_polygon[0][0][0], self.lpr_roi_polygon[0][0][1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                       (self.lpr_roi_polygon[0][0][0], self.lpr_roi_polygon[0][0][1] - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
         
         # Draw detection ROI
         if (roi_type == "detection" or roi_type == "both") and self.detection_roi_polygon is not None:
+            # Fill the polygon with a semi-transparent blue
+            detection_fill_color = (192, 0, 0)  # Blue (B, G, R)
+            cv2.fillPoly(overlay, [self.detection_roi_polygon], detection_fill_color)
+            
+            # Draw the outline on the main frame
             cv2.polylines(vis_frame, [self.detection_roi_polygon], True, (255, 0, 0), 2)
             cv2.putText(vis_frame, "Detection Zone", 
-                        (self.detection_roi_polygon[0][0][0], self.detection_roi_polygon[0][0][1] - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-            
+                       (self.detection_roi_polygon[0][0][0], self.detection_roi_polygon[0][0][1] - 10),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+        
+        # Apply overlay with transparency
+        alpha = 0.3  # Transparency factor
+        cv2.addWeighted(overlay, alpha, vis_frame, 1 - alpha, 0, vis_frame)
+        
         return vis_frame

@@ -201,6 +201,16 @@ def setup_roi_tool():
         
         # Draw the other ROI type if available (for reference)
         if other_roi_points:
+            # Create transparent overlay for filling
+            overlay = frame_display.copy()
+            other_polygon = np.array(other_roi_points)
+            other_fill_color = (192, 0, 0) if roi_type == "lpr" else (0, 0, 192)  # Opposite colors
+            cv2.fillPoly(overlay, [other_polygon], other_fill_color)
+            # Apply transparency
+            alpha = 0.3
+            cv2.addWeighted(overlay, alpha, frame_display, 1 - alpha, 0, frame_display)
+            
+            # Draw outline
             other_polygon = [np.array(other_roi_points)]
             cv2.polylines(frame_display, other_polygon, True, other_roi_color, 1)
             # Label the ROI
@@ -211,6 +221,17 @@ def setup_roi_tool():
 
         # Draw our current ROI
         if polygon_points:
+            # Create transparent overlay for current ROI
+            if len(polygon_points) >= 3:
+                overlay = frame_display.copy()
+                current_polygon = np.array(polygon_points)
+                current_fill_color = (0, 0, 192) if roi_type == "lpr" else (192, 0, 0)
+                cv2.fillPoly(overlay, [current_polygon], current_fill_color)
+                # Apply transparency
+                alpha = 0.3
+                cv2.addWeighted(overlay, alpha, frame_display, 1 - alpha, 0, frame_display)
+            
+            # Draw points and lines
             for pt in polygon_points:
                 cv2.circle(frame_display, pt, 4, roi_color, -1)
             for i in range(1, len(polygon_points)):

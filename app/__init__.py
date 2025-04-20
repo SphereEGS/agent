@@ -144,7 +144,7 @@ class SpherexAgent:
         """Process a single frame from a specific camera"""
         if frame is None:
             logger.warning(f"[AGENT:{camera_id}] Received None frame, skipping processing")
-            return
+            return None
             
         self.frame_counts[camera_id] += 1
         self.update_fps(camera_id)
@@ -232,16 +232,74 @@ class SpherexAgent:
                 if self.frame_counts[camera_id] % 50 == 0:  # Less frequent logging for cooldown
                     logger.debug(f"[AGENT:{camera_id}] In cooldown period, {self.detection_cooldown - time_since_last:.1f}s remaining")
         
-        # Display the frame
-        cv2.imshow(f"Camera Stream: {camera_id}", display_frame)
+        # Return the processed frame (we'll display in grid in the main loop)
+        return display_frame
+
+    def create_grid_view(self, frames):
+        """
+        Create a grid view from multiple camera frames
         
-        # Allow quitting with 'q' key
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            logger.info(f"[AGENT:{camera_id}] User pressed 'q', exiting")
-            return 'quit'
+        Args:
+            frames: Dictionary of {camera_id: frame}
         
-        return None
+        Returns:
+            Combined grid frame
+        """
+        # Get the size of frames and count
+        frame_count = len(frames)
+        if frame_count == 0:
+            return None
+        
+        # Determine grid dimensions based on number of cameras
+        if frame_count == 1:
+            grid_cols, grid_rows = 1, 1
+        elif frame_count <= 4:
+            grid_cols, grid_rows = 2, 2
+        elif frame_count <= 9:
+            grid_cols, grid_rows = 3, 3
+        else:
+            grid_cols, grid_rows = 4, 3  # Max 12 cameras
+        
+        # Get dimensions from first frame
+        sample_frame = next(iter(frames.values()))
+        frame_h, frame_w = sample_frame.shape[:2]
+        
+        # Calculate target size for each grid cell
+        # We'll resize all frames to this size
+        target_w = min(480, frame_w)
+        target_h = int(target_w * frame_h / frame_w)
+        
+        # Create black canvas for the grid
+        grid_width = target_w * grid_cols
+        grid_height = target_h * grid_rows
+        grid_view = np.zeros((grid_height, grid_width, 3), dtype=np.uint8)
+        
+        # Sort camera IDs to maintain consistent positions
+        camera_ids = sorted(frames.keys())
+        
+        # Place frames in grid
+        for i, camera_id in enumerate(camera_ids):
+            if i >= grid_rows * grid_cols:
+                break  # Don't exceed grid size
+            
+            frame = frames[camera_id]
+            resized_frame = cv2.resize(frame, (target_w, target_h))
+            
+            row = i // grid_cols
+            col = i % grid_cols
+            
+            y_start = row * target_h
+            y_end = y_start + target_h
+            x_start = col * target_w
+            x_end = x_start + target_w
+            
+            grid_view[y_start:y_end, x_start:x_end] = resized_frame
+        
+        # Add grid title
+        cv2.putText(grid_view, f"SpherexAgent - Monitoring {frame_count} Cameras", 
+                   (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        return grid_view
 
     def start(self):
         """Start the main processing loop for all cameras"""
@@ -259,9 +317,17 @@ class SpherexAgent:
             frame_counts = {camera_id: 0 for camera_id in self.streams}
             start_times = {camera_id: time() for camera_id in self.streams}
             
+            # Create single window for grid view
+            window_name = "SpherexAgent - Multi-Camera View"
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            
+            # If we have 4 or more cameras, make the window larger
+            if len(self.streams) >= 4:
+                cv2.resizeWindow(window_name, 1280, 720)
+            
+            processed_frames = {}
+            
             while True:
-                quit_requested = False
-                
                 # Process each camera stream
                 for camera_id, stream in self.streams.items():
                     # Read frame and check if successful
@@ -269,9 +335,21 @@ class SpherexAgent:
                     
                     if not ret or frame is None:
                         logger.warning(f"[AGENT:{camera_id}] Failed to read frame, retrying...")
-                        # Wait a bit before retrying
-                        sleep(0.1)
-                        continue
+                        # Use last processed frame if available, otherwise skip
+                        if camera_id in processed_frames:
+                            continue
+                        else:
+                            # Create a black frame with error message
+                            h, w = 480, 640
+                            if camera_id in processed_frames and processed_frames[camera_id] is not None:
+                                h, w = processed_frames[camera_id].shape[:2]
+                            
+                            error_frame = np.zeros((h, w, 3), dtype=np.uint8)
+                            cv2.putText(error_frame, f"Camera {camera_id}: No Signal", 
+                                      (w//4, h//2), cv2.FONT_HERSHEY_SIMPLEX, 
+                                      1.0, (0, 0, 255), 2)
+                            processed_frames[camera_id] = error_frame
+                            continue
                     
                     # Calculate FPS every 100 frames
                     frame_counts[camera_id] += 1
@@ -284,12 +362,19 @@ class SpherexAgent:
                         frame_counts[camera_id] = 0
                     
                     # Process the frame
-                    result = self.process_frame(frame, camera_id)
-                    if result == 'quit':
-                        quit_requested = True
-                        break
+                    processed_frame = self.process_frame(frame, camera_id)
+                    if processed_frame is not None:
+                        processed_frames[camera_id] = processed_frame
                 
-                if quit_requested:
+                # Create and display the grid view
+                if processed_frames:
+                    grid_view = self.create_grid_view(processed_frames)
+                    if grid_view is not None:
+                        cv2.imshow(window_name, grid_view)
+                
+                # Check for 'q' key press
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
                     logger.info("[AGENT] Stopping due to user input (q)...")
                     break
                 
