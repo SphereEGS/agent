@@ -41,19 +41,36 @@ class SpherexAgent:
         """Load camera URLs from environment variables"""
         camera_urls = {}
         
-        # Check for multiple camera configuration via CAMERA_URLS_* pattern
+        # Check for multiple camera configuration via CAMERA_URL_* pattern
         for key, value in os.environ.items():
             if key.startswith("CAMERA_URL_"):
                 camera_id = key[len("CAMERA_URL_"):].lower()
                 if value:
-                    camera_urls[camera_id] = value
-                    logger.info(f"[CONFIG] Found camera '{camera_id}' with URL: {value}")
+                    # Strip quotes and whitespace if present
+                    clean_value = value.strip()
+                    if clean_value.startswith('"') and clean_value.endswith('"'):
+                        clean_value = clean_value[1:-1]
+                    elif clean_value.startswith("'") and clean_value.endswith("'"):
+                        clean_value = clean_value[1:-1]
+                    
+                    camera_urls[camera_id] = clean_value
+                    logger.info(f"[CONFIG] Found camera '{camera_id}' with URL: {clean_value}")
         
         # If no cameras found in environment variables, use the default one
         if not camera_urls:
-            camera_urls["main"] = CAMERA_URL
-            logger.info(f"[CONFIG] Using default camera with URL: {CAMERA_URL}")
-            
+            # Get default camera URL, also clean it
+            default_url = os.getenv("CAMERA_URL", "")
+            if default_url:
+                # Strip quotes and whitespace if present
+                clean_default = default_url.strip()
+                if clean_default.startswith('"') and clean_default.endswith('"'):
+                    clean_default = clean_default[1:-1]
+                elif clean_default.startswith("'") and clean_default.endswith("'"):
+                    clean_default = clean_default[1:-1]
+                
+                camera_urls["main"] = clean_default
+                logger.info(f"[CONFIG] Using default camera with URL: {clean_default}")
+        
         # If CAMERA_SOURCES entries are specified in environment vars, add them
         for source_name, url in CAMERA_SOURCES.items():
             env_var_name = f"ENABLE_{source_name.upper()}"
@@ -61,6 +78,11 @@ class SpherexAgent:
                 if source_name not in camera_urls:
                     camera_urls[source_name] = url
                     logger.info(f"[CONFIG] Enabled camera source '{source_name}' with URL: {url}")
+        
+        # Log the total number of cameras found
+        logger.info(f"[CONFIG] Total cameras configured: {len(camera_urls)}")
+        for cam_id, cam_url in camera_urls.items():
+            logger.info(f"[CONFIG] Camera '{cam_id}': {cam_url}")
         
         return camera_urls
 
