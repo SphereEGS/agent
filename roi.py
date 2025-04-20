@@ -92,33 +92,17 @@ def setup_roi_tool():
     original_height = original_frame.shape[0]
     print(f"Original frame dimensions: {original_width}x{original_height}")
 
-    # Calculate the target dimensions using the same method as in camera.py
+    # Use exact FRAME_WIDTH and FRAME_HEIGHT from config
     target_width = FRAME_WIDTH
     target_height = FRAME_HEIGHT
+    print(f"Target display dimensions: {target_width}x{target_height}")
 
-    # Calculate aspect ratio preserving dimensions exactly as in camera.py
-    aspect_ratio = original_width / original_height
-    if aspect_ratio > (target_width / target_height):
-        # Image is wider than target
-        new_width = target_width
-        new_height = int(target_width / aspect_ratio)
-    else:
-        # Image is taller than target
-        new_height = target_height
-        new_width = int(target_height * aspect_ratio)
+    # Calculate scale ratios directly
+    scale_width_ratio = target_width / original_width
+    scale_height_ratio = target_height / original_height
 
-    # Ensure dimensions are even numbers (required by some OpenCV operations)
-    new_width = new_width - (new_width % 2)
-    new_height = new_height - (new_height % 2)
-
-    print(f"Target display dimensions: {new_width}x{new_height}")
-
-    # Calculate scale ratios
-    scale_width_ratio = new_width / original_width
-    scale_height_ratio = new_height / original_height
-
-    # Resize the frame using the dimensions calculated exactly as in camera.py
-    #display_frame = cv2.resize(original_frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+    # Resize the frame directly to the target dimensions
+    display_frame = cv2.resize(original_frame, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
 
     # Load existing ROIs to display as reference
     existing_roi_points = []

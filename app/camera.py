@@ -74,29 +74,14 @@ class InputStream:
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             logger.info(f"[CAMERA:{self.camera_id}] Connected to camera with resolution: {width}x{height}")
             
-            # Use the window size from configuration
+            # Use the exact dimensions from configuration
             target_width = FRAME_WIDTH
             target_height = FRAME_HEIGHT
             
-            # Calculate the aspect ratio preserving dimensions
-            aspect_ratio = width / height
-            if aspect_ratio > (target_width / target_height):
-                # Image is wider than target
-                new_width = target_width
-                new_height = int(target_width / aspect_ratio)
-            else:
-                # Image is taller than target
-                new_height = target_height
-                new_width = int(target_height * aspect_ratio)
+            # Store the resize dimensions - use exact target dimensions
+            self.resize_dimensions = (target_width, target_height)
             
-            # Ensure dimensions are even numbers (required by some OpenCV operations)
-            new_width = new_width - (new_width % 2)
-            new_height = new_height - (new_height % 2)
-            
-            logger.info(f"[CAMERA:{self.camera_id}] Resizing frames to: {new_width}x{new_height}")
-            
-            # Store the resize dimensions
-            self.resize_dimensions = (new_width, new_height)
+            logger.info(f"[CAMERA:{self.camera_id}] Resizing frames to: {target_width}x{target_height}")
             
             self.cap = cap
             self.source = source
@@ -138,19 +123,11 @@ class InputStream:
                     reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
                     continue
                 
-                # Resize the frame to the target dimensions while preserving aspect ratio
+                # Resize the frame to the target dimensions directly
                 if hasattr(self, 'resize_dimensions') and frame is not None:
                     # Check if frame is valid and has expected dimensions
                     if frame.size > 0 and len(frame.shape) == 3:
-                        # Ensure the frame dimensions are valid and even
-                        h, w = frame.shape[:2]
-                        if h % 2 == 1 or w % 2 == 1:
-                            # Crop by 1 pixel if dimensions are odd
-                            h_new = h - (h % 2)
-                            w_new = w - (w % 2)
-                            frame = frame[:h_new, :w_new]
-                        
-                        # Use INTER_LINEAR instead of INTER_AREA for potentially fewer warnings
+                        # Use INTER_LINEAR for consistent resizing
                         frame = cv2.resize(frame, self.resize_dimensions, interpolation=cv2.INTER_LINEAR)
                     else:
                         logger.warning(f"[CAMERA:{self.camera_id}] Received invalid frame, skipping resize")
