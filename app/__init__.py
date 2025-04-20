@@ -8,7 +8,7 @@ import numpy as np
 
 # Direct imports (no package imports)
 from app.camera import InputStream  # Change to relative import
-from app.config import API_BASE_URL, ZONE, logger, CAMERA_URL, PROCESS_EVERY, CAMERA_SOURCES
+from app.config import API_BASE_URL, ZONE, logger, CAMERA_URL, PROCESS_EVERY
 from app.gate import GateControl
 from app.lpr_model import PlateProcessor
 from app.vehicle_tracking import VehicleTracker
@@ -18,91 +18,60 @@ from app.sync import SyncManager
 class SpherexAgent:
     def __init__(self):
         logger.info("[AGENT] Initializing SpherexAgent")
-        self.streams = {}
+        self.streams = {}  # Dictionary of camera streams
         self.gate = GateControl()
         self.processor = PlateProcessor()
-        self.vehicle_trackers = {}
+        self.vehicle_trackers = {}  # Dictionary of vehicle trackers per camera
         self.cache = SyncManager()
-        self.frame_counts = {}
-        self.last_detection_times = {}
+        self.frame_counts = {}  # Frame counts per camera
+        self.last_detection_times = {}  # Last detection time per camera
         self.detection_cooldown = 2  # 2 second cooldown between detections
         self.is_logged = False
-        self.fps_counters = {}
-        self.fps_timers = {}
-        self.current_fps = {}
-        
-        # Initialize camera URLs from environment variables
-        self.camera_urls = self._load_camera_urls_from_env()
-            
-        logger.info(f"[AGENT] Configured for {len(self.camera_urls)} camera streams")
         logger.info("[AGENT] SpherexAgent initialized successfully")
 
     def _load_camera_urls_from_env(self):
         """Load camera URLs from environment variables"""
         camera_urls = {}
         
-        # Check for multiple camera configuration via CAMERA_URL_* pattern
+        # Look for numbered camera URLs
         for key, value in os.environ.items():
             if key.startswith("CAMERA_URL_"):
                 camera_id = key[len("CAMERA_URL_"):].lower()
-                if value:
-                    # Strip quotes and whitespace if present
-                    clean_value = value.strip()
-                    if clean_value.startswith('"') and clean_value.endswith('"'):
-                        clean_value = clean_value[1:-1]
-                    elif clean_value.startswith("'") and clean_value.endswith("'"):
-                        clean_value = clean_value[1:-1]
-                    
-                    camera_urls[camera_id] = clean_value
-                    logger.info(f"[CONFIG] Found camera '{camera_id}' with URL: {clean_value}")
+                camera_urls[camera_id] = value.strip('"\'')
         
-        # If no cameras found in environment variables, use the default one
+        # Add default camera if available and no other cameras were found
+        if "CAMERA_URL" in os.environ:
+            if not camera_urls:  # Only use main camera if no numbered cameras
+                camera_urls["main"] = os.environ["CAMERA_URL"].strip('"\'')
+        
+        # If no cameras found, use default webcam
         if not camera_urls:
-            # Get default camera URL, also clean it
-            default_url = os.getenv("CAMERA_URL", "")
-            if default_url:
-                # Strip quotes and whitespace if present
-                clean_default = default_url.strip()
-                if clean_default.startswith('"') and clean_default.endswith('"'):
-                    clean_default = clean_default[1:-1]
-                elif clean_default.startswith("'") and clean_default.endswith("'"):
-                    clean_default = clean_default[1:-1]
-                
-                camera_urls["main"] = clean_default
-                logger.info(f"[CONFIG] Using default camera with URL: {clean_default}")
-        
-        # If CAMERA_SOURCES entries are specified in environment vars, add them
-        for source_name, url in CAMERA_SOURCES.items():
-            env_var_name = f"ENABLE_{source_name.upper()}"
-            if os.getenv(env_var_name, "").lower() == "true":
-                if source_name not in camera_urls:
-                    camera_urls[source_name] = url
-                    logger.info(f"[CONFIG] Enabled camera source '{source_name}' with URL: {url}")
-        
-        # Log the total number of cameras found
-        logger.info(f"[CONFIG] Total cameras configured: {len(camera_urls)}")
-        for cam_id, cam_url in camera_urls.items():
-            logger.info(f"[CONFIG] Camera '{cam_id}': {cam_url}")
-        
+            camera_urls["main"] = "0"
+            
+        logger.info(f"[AGENT] Found {len(camera_urls)} camera configurations")
+        for camera_id, url in camera_urls.items():
+            logger.info(f"[AGENT] Camera {camera_id}: {url}")
+            
         return camera_urls
 
     def initialize_streams(self):
-        """Initialize all configured input streams"""
-        success = True
-        for camera_id, camera_url in self.camera_urls.items():
-            logger.info(f"[AGENT] Initializing input stream '{camera_id}' from source: {camera_url}")
+        """Initialize all camera streams"""
+        camera_urls = self._load_camera_urls_from_env()
+        success = False
+        
+        for camera_id, camera_url in camera_urls.items():
             try:
-                self.streams[camera_id] = InputStream(camera_url=camera_url, camera_id=camera_id)
+                logger.info(f"[AGENT] Initializing camera {camera_id} from source: {camera_url}")
+                stream = InputStream(camera_url=camera_url, camera_id=camera_id)
+                self.streams[camera_id] = stream
                 self.vehicle_trackers[camera_id] = VehicleTracker(camera_id=camera_id)
                 self.frame_counts[camera_id] = 0
                 self.last_detection_times[camera_id] = 0
-                self.fps_counters[camera_id] = 0
-                self.fps_timers[camera_id] = time()
-                self.current_fps[camera_id] = 0
-                logger.info(f"[AGENT] Input stream '{camera_id}' initialized successfully")
+                logger.info(f"[AGENT] Camera {camera_id} initialized successfully")
+                success = True
             except Exception as e:
-                logger.error(f"[AGENT] Failed to initialize input stream '{camera_id}': {e}")
-                success = False
+                logger.error(f"[AGENT] Failed to initialize camera {camera_id}: {e}")
+                
         return success
 
     def log_gate_entry(self, plate, frame, is_authorized, camera_id="main"):
@@ -111,7 +80,7 @@ class SpherexAgent:
             # Add text and visualize ROI on the frame
             logger.info(f"[GATE:{camera_id}] Processing gate entry for plate: {plate}, authorized: {is_authorized}")
             frame_with_text = self.processor.add_text_to_image(frame, plate)
-            frame_with_roi = self.processor.visualize_roi(frame_with_text)
+            frame_with_roi = self.vehicle_trackers[camera_id].roi_manager.draw_roi(frame_with_text)
             
             # Save temporary image file
             temp_file = f"gate_entry_{camera_id}.jpg"
@@ -130,98 +99,114 @@ class SpherexAgent:
             logger.error(f"[GATE:{camera_id}] Error logging entry: {e}")
 
     def update_fps(self, camera_id):
-        """Update FPS counter for a specific camera"""
-        self.fps_counters[camera_id] += 1
-        current_time = time()
-        elapsed = current_time - self.fps_timers[camera_id]
-        
-        if elapsed >= 1.0:  # Update FPS every second
-            self.current_fps[camera_id] = self.fps_counters[camera_id] / elapsed
-            self.fps_counters[camera_id] = 0
-            self.fps_timers[camera_id] = current_time
-
+        """Update FPS calculation for a camera"""
+        if not hasattr(self, 'start_times'):
+            self.start_times = {}
+            
+        if camera_id not in self.start_times:
+            self.start_times[camera_id] = time()
+            self.frame_counts[camera_id] = 0
+            return
+            
+        # Calculate FPS every 100 frames
+        self.frame_counts[camera_id] += 1
+        if self.frame_counts[camera_id] % 100 == 0:
+            elapsed = time() - self.start_times[camera_id]
+            fps = self.frame_counts[camera_id] / elapsed if elapsed > 0 else 0
+            logger.info(f"[AGENT:{camera_id}] Processing speed: {fps:.1f} FPS ({self.frame_counts[camera_id]} frames in {elapsed:.1f}s)")
+            # Reset counters for more accurate recent FPS
+            self.start_times[camera_id] = time()
+            self.frame_counts[camera_id] = 0
+            
     def process_frame(self, frame, camera_id):
         """Process a single frame from a specific camera"""
         if frame is None:
             logger.warning(f"[AGENT:{camera_id}] Received None frame, skipping processing")
-            return None
+            return frame
             
-        self.frame_counts[camera_id] += 1
-        self.update_fps(camera_id)
+        self.frame_counts[camera_id] = self.frame_counts.get(camera_id, 0) + 1
+        vehicle_tracker = self.vehicle_trackers.get(camera_id)
+        
+        if vehicle_tracker is None:
+            logger.error(f"[AGENT:{camera_id}] No vehicle tracker found for camera {camera_id}")
+            return frame
         
         # Log frame processing periodically
         if self.frame_counts[camera_id] % 100 == 0:
-            logger.info(f"[AGENT:{camera_id}] Processing frame {self.frame_counts[camera_id]} at {self.current_fps[camera_id]:.1f} FPS")
+            logger.info(f"[AGENT:{camera_id}] Processing frame {self.frame_counts[camera_id]}")
         
         # Create a working copy of the frame for visualization
         display_frame = frame.copy()
         
-        # Add frame counter and FPS to display
-        cv2.putText(display_frame, f"Camera: {camera_id} | Frame: {self.frame_counts[camera_id]} | FPS: {self.current_fps[camera_id]:.1f}", 
-                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        # Add frame counter and camera ID to display
+        cv2.putText(display_frame, f"{camera_id}: {self.frame_counts[camera_id]}", (10, 30), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
         
-        # Process every Nth frame based on configuration
+        # Always draw ROI on the frame even if we're not processing detection
+        # This ensures ROI is visible in all grid cells
+        display_frame = vehicle_tracker.roi_manager.draw_roi(display_frame, roi_type="both")
+        
+        # Skip frames based on PROCESS_EVERY setting
         if self.frame_counts[camera_id] % PROCESS_EVERY == 0:
             # Check cooldown period
             current_time = time()
-            time_since_last = current_time - self.last_detection_times[camera_id]
+            last_detection_time = self.last_detection_times.get(camera_id, 0)
+            time_since_last = current_time - last_detection_time
             
             if time_since_last > self.detection_cooldown:
                 logger.debug(f"[AGENT:{camera_id}] Running detection on frame {self.frame_counts[camera_id]}")
                 try:
                     # Store the previous count of detected plates
-                    vehicle_tracker = self.vehicle_trackers[camera_id]
-                    prev_plate_count = len(vehicle_tracker.detected_plates)
                     prev_plates = set(vehicle_tracker.detected_plates.items())
                     
                     # Detect vehicles and license plates
-                    # The vehicle_tracker now manages when to activate detection based on ROIs
                     detected, vis_frame = vehicle_tracker.detect_vehicles(frame)
                     
-                    if vis_frame is not None:
-                        # Always use the visualization frame from the tracker
+                    if detected and vis_frame is not None:
+                        # Use the visualization frame that comes from the tracker
                         display_frame = vis_frame
                         
-                        if detected:
-                            # Only log plate info if there's a change in detected plates
-                            curr_plates = set(vehicle_tracker.detected_plates.items())
-                            new_plates = curr_plates - prev_plates
+                        # Only log plate info if there's a change in detected plates
+                        curr_plates = set(vehicle_tracker.detected_plates.items())
+                        new_plates = curr_plates - prev_plates
+                        
+                        if new_plates:
+                            logger.info(f"[AGENT:{camera_id}] Newly detected plates: {dict(new_plates)}")
                             
-                            if new_plates:
-                                logger.info(f"[AGENT:{camera_id}] Newly detected plates: {dict(new_plates)}")
+                            # Process newly detected plates
+                            for track_id, plate_text in new_plates:
+                                # Check if plate is authorized
+                                is_authorized = self.cache.is_authorized(plate_text)
+                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                 
-                                # Process newly detected plates
-                                for track_id, plate_text in new_plates:
-                                    # Check if plate is authorized
-                                    is_authorized = self.cache.is_authorized(plate_text)
-                                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                    
-                                    # Update the authorization status for display
-                                    # Make sure the vehicle tracker's last recognized plate is updated
-                                    vehicle_tracker.last_recognized_plate = plate_text
-                                    vehicle_tracker.last_plate_authorized = is_authorized
-                                    logger.info(f"[AGENT:{camera_id}] Updated last_recognized_plate to {plate_text}, auth: {is_authorized}")
-                                    
-                                    # Log the detection
-                                    auth_status = "Authorized" if is_authorized else "Not Authorized"
-                                    logger.info(f"[AGENT:{camera_id}] [{timestamp}] Vehicle {track_id} with plate: {plate_text} - {auth_status}")
-                                    
-                                    # Handle gate control
+                                # Update the authorization status for display
+                                vehicle_tracker.last_recognized_plate = plate_text
+                                vehicle_tracker.last_plate_authorized = is_authorized
+                                
+                                # Log the detection
+                                auth_status = "Authorized" if is_authorized else "Not Authorized"
+                                logger.info(f"[AGENT:{camera_id}] [{timestamp}] Vehicle {track_id} with plate: {plate_text} - {auth_status}")
+                                
+                                # Handle gate control - only for main camera
+                                if camera_id == "main" or camera_id == "1":  # Assuming camera 1 controls the gate
                                     if is_authorized:
                                         logger.info(f"[GATE:{camera_id}] Opening gate for authorized plate: {plate_text}")
                                         self.gate.open()
-                                        self.log_gate_entry(plate_text, frame, 1, camera_id)
+                                        self.log_gate_entry(plate_text, frame, is_authorized, camera_id)
                                         self.last_detection_times[camera_id] = current_time
                                     else:
                                         logger.info(f"[GATE:{camera_id}] Not opening gate for unauthorized plate: {plate_text}")
-                                        self.log_gate_entry(plate_text, frame, 0, camera_id)
-                                        self.is_logged = True
-                            elif self.frame_counts[camera_id] % 200 == 0:
-                                # Log total plate count periodically
-                                plates = vehicle_tracker.detected_plates
-                                logger.info(f"[AGENT:{camera_id}] Total plates detected: {len(plates)}")
-                        elif self.frame_counts[camera_id] % 50 == 0:  # Less frequent logging for no detections
-                            logger.debug(f"[AGENT:{camera_id}] No vehicle detections in frame {self.frame_counts[camera_id]}")
+                                        self.log_gate_entry(plate_text, frame, is_authorized, camera_id)
+                                else:
+                                    # Just log for other cameras
+                                    logger.info(f"[AGENT:{camera_id}] Detected {auth_status} plate: {plate_text} (no gate action)")
+                                    
+                        elif self.frame_counts[camera_id] % 200 == 0:
+                            # Log total plate count periodically
+                            plates = vehicle_tracker.detected_plates
+                            logger.info(f"[AGENT:{camera_id}] Total plates detected: {len(plates)}")
+                    elif self.frame_counts[camera_id] % 50 == 0:  # Less frequent logging for no detections
+                        logger.debug(f"[AGENT:{camera_id}] No vehicle detections in frame {self.frame_counts[camera_id]}")
                         
                 except Exception as e:
                     logger.error(f"[AGENT:{camera_id}] Frame processing error: {e}")
@@ -234,6 +219,100 @@ class SpherexAgent:
         
         # Return the processed frame (we'll display in grid in the main loop)
         return display_frame
+
+    def start(self):
+        """Start the main processing loop for all cameras"""
+        logger.info("[AGENT] Starting SpherexAgent...")
+        
+        if not self.initialize_streams():
+            logger.error("[AGENT] Failed to initialize one or more streams. Continuing with available streams.")
+            if not self.streams:
+                logger.error("[AGENT] No streams available. Exiting.")
+                return
+
+        logger.info(f"[AGENT] Starting video processing for {len(self.streams)} cameras... Press 'q' to stop the program")
+
+        try:
+            frame_counts = {camera_id: 0 for camera_id in self.streams}
+            start_times = {camera_id: time() for camera_id in self.streams}
+            
+            # Create single window for grid view
+            window_name = "SpherexAgent - Multi-Camera View"
+            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            
+            # If we have 4 or more cameras, make the window larger
+            if len(self.streams) >= 4:
+                cv2.resizeWindow(window_name, 1280, 720)
+            
+            processed_frames = {}
+            
+            while True:
+                # Process each camera stream
+                for camera_id, stream in self.streams.items():
+                    # Read frame and check if successful
+                    ret, frame = stream.read()
+                    
+                    if not ret or frame is None:
+                        logger.warning(f"[AGENT:{camera_id}] Failed to read frame, retrying...")
+                        # Use last processed frame if available, otherwise skip
+                        if camera_id in processed_frames:
+                            continue
+                        else:
+                            # Create a black frame with error message
+                            h, w = 480, 640
+                            if camera_id in processed_frames and processed_frames[camera_id] is not None:
+                                h, w = processed_frames[camera_id].shape[:2]
+                            
+                            error_frame = np.zeros((h, w, 3), dtype=np.uint8)
+                            cv2.putText(error_frame, f"Camera {camera_id}: No Signal", 
+                                      (w//4, h//2), cv2.FONT_HERSHEY_SIMPLEX, 
+                                      1.0, (0, 0, 255), 2)
+                            processed_frames[camera_id] = error_frame
+                            continue
+                    
+                    # Calculate FPS every 100 frames
+                    frame_counts[camera_id] += 1
+                    if frame_counts[camera_id] % 100 == 0:
+                        elapsed = time() - start_times[camera_id]
+                        fps = frame_counts[camera_id] / elapsed if elapsed > 0 else 0
+                        logger.info(f"[AGENT:{camera_id}] Processing speed: {fps:.1f} FPS ({frame_counts[camera_id]} frames in {elapsed:.1f}s)")
+                        # Reset counters for more accurate recent FPS
+                        start_times[camera_id] = time()
+                        frame_counts[camera_id] = 0
+                    
+                    # Process the frame
+                    processed_frame = self.process_frame(frame, camera_id)
+                    if processed_frame is not None:
+                        processed_frames[camera_id] = processed_frame
+                
+                # Create and display the grid view
+                if processed_frames:
+                    grid_view = self.create_grid_view(processed_frames)
+                    if grid_view is not None:
+                        cv2.imshow(window_name, grid_view)
+                
+                # Check for 'q' key press
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    logger.info("[AGENT] Stopping due to user input (q)...")
+                    break
+                
+                # Add a small sleep to reduce CPU usage
+                sleep(0.01)
+                
+        except KeyboardInterrupt:
+            logger.info("[AGENT] Stopping due to keyboard interrupt...")
+        except Exception as e:
+            logger.error(f"[AGENT] Processing error: {e}")
+            import traceback
+            logger.error("[AGENT] Stack trace: " + traceback.format_exc())
+        finally:
+            # Release all streams and close windows
+            for camera_id, stream in self.streams.items():
+                if stream:
+                    stream.release()
+            cv2.destroyAllWindows()
+            logger.info("[AGENT] Processing stopped.")
 
     def create_grid_view(self, frames):
         """
@@ -330,100 +409,6 @@ class SpherexAgent:
                    (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
         return grid_view
-
-    def start(self):
-        """Start the main processing loop for all cameras"""
-        logger.info("[AGENT] Starting SpherexAgent...")
-        
-        if not self.initialize_streams():
-            logger.error("[AGENT] Failed to initialize one or more streams. Continuing with available streams.")
-            if not self.streams:
-                logger.error("[AGENT] No streams available. Exiting.")
-                return
-
-        logger.info(f"[AGENT] Starting video processing for {len(self.streams)} cameras... Press 'q' to stop the program")
-
-        try:
-            frame_counts = {camera_id: 0 for camera_id in self.streams}
-            start_times = {camera_id: time() for camera_id in self.streams}
-            
-            # Create single window for grid view
-            window_name = "SpherexAgent - Multi-Camera View"
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-            
-            # If we have 4 or more cameras, make the window larger
-            if len(self.streams) >= 4:
-                cv2.resizeWindow(window_name, 1280, 720)
-            
-            processed_frames = {}
-            
-            while True:
-                # Process each camera stream
-                for camera_id, stream in self.streams.items():
-                    # Read frame and check if successful
-                    ret, frame = stream.read()
-                    
-                    if not ret or frame is None:
-                        logger.warning(f"[AGENT:{camera_id}] Failed to read frame, retrying...")
-                        # Use last processed frame if available, otherwise skip
-                        if camera_id in processed_frames:
-                            continue
-                        else:
-                            # Create a black frame with error message
-                            h, w = 480, 640
-                            if camera_id in processed_frames and processed_frames[camera_id] is not None:
-                                h, w = processed_frames[camera_id].shape[:2]
-                            
-                            error_frame = np.zeros((h, w, 3), dtype=np.uint8)
-                            cv2.putText(error_frame, f"Camera {camera_id}: No Signal", 
-                                      (w//4, h//2), cv2.FONT_HERSHEY_SIMPLEX, 
-                                      1.0, (0, 0, 255), 2)
-                            processed_frames[camera_id] = error_frame
-                            continue
-                    
-                    # Calculate FPS every 100 frames
-                    frame_counts[camera_id] += 1
-                    if frame_counts[camera_id] % 100 == 0:
-                        elapsed = time() - start_times[camera_id]
-                        fps = frame_counts[camera_id] / elapsed if elapsed > 0 else 0
-                        logger.info(f"[AGENT:{camera_id}] Processing speed: {fps:.1f} FPS ({frame_counts[camera_id]} frames in {elapsed:.1f}s)")
-                        # Reset counters for more accurate recent FPS
-                        start_times[camera_id] = time()
-                        frame_counts[camera_id] = 0
-                    
-                    # Process the frame
-                    processed_frame = self.process_frame(frame, camera_id)
-                    if processed_frame is not None:
-                        processed_frames[camera_id] = processed_frame
-                
-                # Create and display the grid view
-                if processed_frames:
-                    grid_view = self.create_grid_view(processed_frames)
-                    if grid_view is not None:
-                        cv2.imshow(window_name, grid_view)
-                
-                # Check for 'q' key press
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    logger.info("[AGENT] Stopping due to user input (q)...")
-                    break
-                
-                # Add a small sleep to reduce CPU usage
-                sleep(0.01)
-                
-        except KeyboardInterrupt:
-            logger.info("[AGENT] Stopping due to keyboard interrupt...")
-        except Exception as e:
-            logger.error(f"[AGENT] Processing error: {e}")
-            import traceback
-            logger.error("[AGENT] Stack trace: " + traceback.format_exc())
-        finally:
-            # Release all streams and close windows
-            for camera_id, stream in self.streams.items():
-                if stream:
-                    stream.release()
-            cv2.destroyAllWindows()
-            logger.info("[AGENT] Processing stopped.")
 
 if __name__ == "__main__":
     agent = SpherexAgent()
