@@ -163,7 +163,7 @@ while True:
         }
         
         # Save to config.json
-        save_path = "config.json"
+        save_path = "trigger_roi.json"
         with open(save_path, "w") as f:
             json.dump(config_data, f, indent=2)
         print(f"ROI configuration saved to {save_path}")

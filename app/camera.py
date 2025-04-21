@@ -12,11 +12,11 @@ class InputStream:
     
     def __init__(self, camera_url=None, camera_id="main"):
         """
-        Initialize camera with the specified input source
+        Initialize camera with the configured input source
         
         Args:
-            camera_url: URL/path to camera stream, overrides config if provided
-            camera_id: Unique identifier for this camera stream
+            camera_url: URL or path to the camera/video source
+            camera_id: Identifier for this camera stream
         """
         self.cap = None
         self.frame_count = 0
@@ -35,7 +35,7 @@ class InputStream:
         self.capture_thread = None
         
         # Initialize stream with configured source
-        logger.info(f"[CAMERA:{self.camera_id}] Initializing input stream with source: {self.camera_url}")
+        logger.info(f"[CAMERA:{camera_id}] Initializing input stream with source: {camera_url}")
         self._connect_to_source()
         self._start_capture_thread()
         
@@ -43,7 +43,12 @@ class InputStream:
         """Connect to the video source with proper error handling."""
         try:
             # Clean the source string of any quotes or comments
-            source = self.camera_url.strip() if self.camera_url else ""
+            source = self.camera_url.strip() if self.camera_url else None
+            if not source:
+                from .config import CAMERA_URL
+                source = CAMERA_URL
+                logger.warning(f"[CAMERA:{self.camera_id}] No camera URL provided, using default: {source}")
+                
             if source.startswith(('"', "'")):
                 source = source[1:-1]
             if '#' in source:
@@ -65,9 +70,9 @@ class InputStream:
                     logger.info(f"[CAMERA:{self.camera_id}] Falling back to local webcam (index 0)")
                     cap = cv2.VideoCapture(0)
                     if not cap.isOpened():
-                        raise RuntimeError("Failed to connect to webcam")
+                        raise RuntimeError(f"[CAMERA:{self.camera_id}] Failed to connect to webcam")
                 else:
-                    raise RuntimeError(f"Failed to connect to camera source: {source}")
+                    raise RuntimeError(f"[CAMERA:{self.camera_id}] Failed to connect to camera source: {source}")
             
             # Get the original frame size
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -109,7 +114,7 @@ class InputStream:
                 logger.info(f"[CAMERA:{self.camera_id}] Attempting fallback to webcam...")
                 cap = cv2.VideoCapture(0)
                 if not cap.isOpened():
-                    raise RuntimeError("Failed to connect to webcam")
+                    raise RuntimeError(f"[CAMERA:{self.camera_id}] Failed to connect to webcam")
                 self.cap = cap
                 self.source = "webcam"
                 return cap
@@ -183,7 +188,11 @@ class InputStream:
             return  # Thread already running
             
         self.stop_event.clear()
-        self.capture_thread = threading.Thread(target=self._capture_thread_function, daemon=True)
+        self.capture_thread = threading.Thread(
+            target=self._capture_thread_function, 
+            daemon=True,
+            name=f"camera-{self.camera_id}"
+        )
         self.capture_thread.start()
         logger.info(f"[CAMERA:{self.camera_id}] Started capture thread")
     
@@ -198,6 +207,7 @@ class InputStream:
             # Try to get a frame from the queue with timeout
             try:
                 ret, frame = self.frame_queue.get(timeout=1.0)
+                self.frame_count += 1
                 return ret, frame
             except queue.Empty:
                 logger.warning(f"[CAMERA:{self.camera_id}] No frames in queue, waiting for capture thread")
@@ -205,6 +215,7 @@ class InputStream:
                 if self.cap and self.cap.isOpened():
                     ret, frame = self.cap.read()
                     if ret:
+                        self.frame_count += 1
                         return ret, frame
                 
                 return False, None
@@ -215,9 +226,31 @@ class InputStream:
                 logger.info(f"[CAMERA:{self.camera_id}] Attempting fallback to webcam...")
                 self.cap = cv2.VideoCapture(0)
                 if not self.cap.isOpened():
-                    raise RuntimeError("Failed to connect to webcam")
+                    raise RuntimeError(f"[CAMERA:{self.camera_id}] Failed to connect to webcam")
                 return self.read()
             raise
+    
+    def get_frame_count(self):
+        """Get the current frame count."""
+        return self.frame_count
+        
+    def get_fps(self):
+        """Get approximate FPS based on last minute of operations."""
+        if not hasattr(self, 'fps_tracking_start'):
+            self.fps_tracking_start = time.time()
+            self.fps_tracking_count = 0
+            return 0
+            
+        current_time = time.time()
+        elapsed = current_time - self.fps_tracking_start
+        
+        if elapsed > 60:  # Reset every minute
+            self.fps_tracking_start = current_time
+            self.fps_tracking_count = 0
+            return 0
+            
+        self.fps_tracking_count += 1
+        return self.fps_tracking_count / elapsed if elapsed > 0 else 0
     
     def release(self):
         """
