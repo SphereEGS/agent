@@ -50,6 +50,9 @@ logger.addHandler(file_handler)
 GATE = os.getenv("GATE", "A1")
 logger.info(f"Operating in zone: {GATE}")
 
+ZONE = os.getenv("ZONE", "EDARA")
+logger.info(f"Zone: {ZONE}")
+
 # Camera input sources
 CAMERA_SOURCES = {
     "cctv": "rtsp://test:123456789A@10.0.40.11:554/Streaming/channels/801",  # Default CCTV stream

@@ -8,7 +8,7 @@ import numpy as np
 
 # Direct imports (no package imports)
 from app.camera import InputStream  # Change to relative import
-from app.config import API_BASE_URL, GATE, logger, CAMERA_URL, PROCESS_EVERY
+from app.config import API_BASE_URL, ZONE, logger, CAMERA_URL, PROCESS_EVERY
 from app.gate import GateControl
 from app.lpr_model import PlateProcessor
 from app.vehicle_tracking import VehicleTracker
