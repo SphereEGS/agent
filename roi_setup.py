@@ -8,9 +8,9 @@ import numpy as np
 # Load environment variables
 load_dotenv()
 
-# Default settings
-DEFAULT_WIDTH = 1280
-DEFAULT_HEIGHT = 720
+# Get dimensions from .env or use defaults as fallback
+FRAME_WIDTH = int(os.getenv("FRAME_WIDTH", "1280"))
+FRAME_HEIGHT = int(os.getenv("FRAME_HEIGHT", "720"))
 
 def get_camera_sources():
     """Get available camera sources from environment variables"""
@@ -143,6 +143,9 @@ def draw_roi(frame, roi_type="LPR"):
 
 def main():
     """Main function to handle camera selection and ROI setup"""
+    # Print using dimensions from .env
+    print(f"Using frame dimensions from .env: {FRAME_WIDTH}x{FRAME_HEIGHT}")
+    
     # Get camera sources
     cameras = get_camera_sources()
     
@@ -196,9 +199,10 @@ def main():
     original_height = original_frame.shape[0]
     print(f"Original frame dimensions: {original_width}x{original_height}")
     
-    # Calculate target dimensions (same as camera.py logic)
-    target_width = int(os.getenv("FRAME_WIDTH", DEFAULT_WIDTH))
-    target_height = int(os.getenv("FRAME_HEIGHT", DEFAULT_HEIGHT))
+    # Use exact dimensions from .env
+    target_width = FRAME_WIDTH
+    target_height = FRAME_HEIGHT
+    print(f"Target dimensions from .env: {target_width}x{target_height}")
     
     # Preserve aspect ratio
     aspect_ratio = original_width / original_height
@@ -214,6 +218,7 @@ def main():
     # Ensure dimensions are even
     new_width = new_width - (new_width % 2)
     new_height = new_height - (new_height % 2)
+    print(f"Display dimensions (preserving aspect ratio): {new_width}x{new_height}")
     
     # Calculate scale ratios
     scale_width_ratio = new_width / original_width
@@ -320,6 +325,12 @@ def main():
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 2)
         cv2.putText(visual_frame, "ROIs Configured Successfully", (30, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 1)
+        
+        # Show camera ID on the preview
+        cv2.putText(visual_frame, f"Camera: {selected_id}", (30, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+        cv2.putText(visual_frame, f"Camera: {selected_id}", (30, 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
         
         # Show the configuration and wait for key press
         cv2.imshow("ROI Configuration Complete", visual_frame)
