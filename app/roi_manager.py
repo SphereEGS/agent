@@ -289,42 +289,53 @@ class RoiManager:
         scaled_detection_roi = self.scale_roi_to_frame(frame, self.detection_roi_polygon)
         scaled_trigger_roi = self.scale_roi_to_frame(frame, self.trigger_roi_polygon)
         
-        # Draw detection ROI
-        if scaled_detection_roi is not None:
-            # Draw ROI with a thicker line and brighter color
-            cv2.polylines(vis_frame, [scaled_detection_roi], True, (0, 255, 0), 3)  # Bright green, thick line
-            
-            # Fill the ROI with semi-transparent green
-            overlay = vis_frame.copy()
-            cv2.fillPoly(overlay, [scaled_detection_roi], (0, 200, 0, 50))  # Semi-transparent green
-            cv2.addWeighted(overlay, 0.15, vis_frame, 0.85, 0, vis_frame)  # More subtle transparency
-            
-            # Add a label at the first point of the ROI polygon
-            roi_x, roi_y = scaled_detection_roi[0]
-            cv2.putText(vis_frame, "LPR Zone", (roi_x, roi_y - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
-            cv2.putText(vis_frame, "LPR Zone", (roi_x, roi_y - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 1)  # Green text
-        
         # Draw trigger ROI if enabled
         if self.enable_trigger and scaled_trigger_roi is not None:
             # Draw with a different color to distinguish from detection ROI
             color = (0, 165, 255) if self.detection_active else (0, 0, 255)  # Orange if active, red if inactive
-            cv2.polylines(vis_frame, [scaled_trigger_roi], True, color, 2)
+            cv2.polylines(vis_frame, [scaled_trigger_roi], True, color, 5)  # Thicker line (5 pixels)
             
             # Fill with semi-transparent color
             overlay = vis_frame.copy()
-            fill_color = (0, 165, 255, 50) if self.detection_active else (0, 0, 255, 30)  # Orange or red
+            fill_color = (0, 165, 255) if self.detection_active else (0, 0, 255)  # Orange or red
             cv2.fillPoly(overlay, [scaled_trigger_roi], fill_color)
-            cv2.addWeighted(overlay, 0.1, vis_frame, 0.9, 0, vis_frame)  # Very subtle transparency
+            # More visible transparency (30%)
+            cv2.addWeighted(overlay, 0.3, vis_frame, 0.7, 0, vis_frame)
             
-            # Add a label
-            roi_x, roi_y = scaled_trigger_roi[0]
-            status = "ACTIVE" if self.detection_active else "Waiting"
-            cv2.putText(vis_frame, f"Trigger Zone ({status})", (roi_x, roi_y - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
-            cv2.putText(vis_frame, f"Trigger Zone ({status})", (roi_x, roi_y - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 1)  # Colored text
+            # Add a more visible label
+            status = "ACTIVE" if self.detection_active else "Standby"
+            label_position = scaled_trigger_roi[0]
+            cv2.putText(vis_frame, f"Trigger Zone ({status})", 
+                       (label_position[0], label_position[1] - 15),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 4)  # Thicker black outline (4 pixels)
+            cv2.putText(vis_frame, f"Trigger Zone ({status})", 
+                       (label_position[0], label_position[1] - 15),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)  # Thicker colored text (2 pixels)
+        
+        # Draw detection ROI
+        if scaled_detection_roi is not None:
+            # Draw ROI with a thicker line and brighter color
+            cv2.polylines(vis_frame, [scaled_detection_roi], True, (0, 255, 0), 5)  # Bright green, thicker line
+            
+            # Fill the ROI with semi-transparent green
+            overlay = vis_frame.copy()
+            cv2.fillPoly(overlay, [scaled_detection_roi], (0, 255, 0))
+            cv2.addWeighted(overlay, 0.3, vis_frame, 0.7, 0, vis_frame)  # More visible transparency
+            
+            # Add a more visible label
+            label_position = scaled_detection_roi[0]
+            cv2.putText(vis_frame, "LPR Zone", 
+                       (label_position[0], label_position[1] - 15),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 4)  # Thicker black outline
+            cv2.putText(vis_frame, "LPR Zone", 
+                       (label_position[0], label_position[1] - 15),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)  # Thicker green text
+        
+        # Add camera ID to top-left corner
+        cv2.putText(vis_frame, f"Camera: {self.camera_id}", (20, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 0), 4)  # Black outline
+        cv2.putText(vis_frame, f"Camera: {self.camera_id}", (20, 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)  # White text
         
         return vis_frame
 

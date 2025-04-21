@@ -63,6 +63,16 @@ class SpherexAgent:
             logger.warning("[AGENT] No cameras found in environment variables, using default")
             camera_urls["main"] = CAMERA_URL
         
+        # Check if we should only run a specific camera
+        specific_camera = os.environ.get("RUN_CAMERA_ID")
+        if specific_camera and specific_camera.lower() != "all":
+            if specific_camera.lower() in camera_urls:
+                camera_url = camera_urls[specific_camera.lower()]
+                camera_urls = {specific_camera.lower(): camera_url}
+                logger.info(f"[AGENT] Running only camera {specific_camera}: {camera_url}")
+            else:
+                logger.warning(f"[AGENT] Requested camera {specific_camera} not found. Available cameras: {list(camera_urls.keys())}")
+        
         return camera_urls
 
     def initialize_streams(self):
@@ -123,17 +133,22 @@ class SpherexAgent:
         if camera_id not in self.fps_stats:
             self.fps_stats[camera_id] = {
                 'start_time': time(),
-                'frame_count': 0
+                'frame_count': 0,
+                'current_fps': 0
             }
         
         # Increment frame count
         self.fps_stats[camera_id]['frame_count'] += 1
         
-        # Check if it's time to update FPS
-        if self.fps_stats[camera_id]['frame_count'] % 100 == 0:
-            elapsed = time() - self.fps_stats[camera_id]['start_time']
+        # Calculate FPS every second
+        elapsed = time() - self.fps_stats[camera_id]['start_time']
+        if elapsed >= 1.0:
             fps = self.fps_stats[camera_id]['frame_count'] / elapsed
-            logger.info(f"[AGENT:{camera_id}] Processing speed: {fps:.1f} FPS ({self.fps_stats[camera_id]['frame_count']} frames in {elapsed:.1f}s)")
+            self.fps_stats[camera_id]['current_fps'] = fps
+            
+            # Log FPS every 10 seconds
+            if self.fps_stats[camera_id]['frame_count'] % (fps * 10) < 1:
+                logger.info(f"[AGENT:{camera_id}] Processing speed: {fps:.1f} FPS")
             
             # Reset counters for more accurate recent FPS
             self.fps_stats[camera_id]['start_time'] = time()
@@ -335,99 +350,141 @@ class SpherexAgent:
         return grid_view
 
     def start(self):
-        """Start the main processing loop for all cameras"""
-        logger.info("[AGENT] Starting SpherexAgent...")
-        
-        if not self.initialize_streams():
-            logger.error("[AGENT] Failed to initialize one or more streams. Continuing with available streams.")
-            if not self.streams:
-                logger.error("[AGENT] No streams available. Exiting.")
-                return
-
-        logger.info(f"[AGENT] Starting video processing for {len(self.streams)} cameras... Press 'q' to stop the program")
-
+        """Start the main processing loop for each camera in separate windows."""
         try:
-            frame_counts = {camera_id: 0 for camera_id in self.streams}
-            start_times = {camera_id: time() for camera_id in self.streams}
-            self.fps_stats = {camera_id: {'start_time': time(), 'frame_count': 0} for camera_id in self.streams}
+            # Initialize streams
+            success = self.initialize_streams()
+            if not success:
+                logger.error("Failed to initialize camera streams")
+                return False
             
-            # Create single window for grid view
-            window_name = "SpherexAgent - Multi-Camera View"
-            cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            # Initialize FPS tracking
+            self.fps_stats = {}
             
-            # If we have 4 or more cameras, make the window larger
-            if len(self.streams) >= 4:
+            # Start processing loop
+            logger.info("Starting main processing loop")
+            
+            # Initialize separate windows for each camera
+            for i, camera_id in enumerate(self.streams):
+                window_name = f"Camera Stream - {camera_id}"
+                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                
+                # Set a reasonable window size
                 cv2.resizeWindow(window_name, 1280, 720)
-            
-            processed_frames = {}
-            
-            while True:
-                # Process each camera stream
-                for camera_id, stream in self.streams.items():
-                    # Read frame and check if successful
-                    ret, frame = stream.read()
-                    
-                    if not ret or frame is None:
-                        logger.warning(f"[AGENT:{camera_id}] Failed to read frame, retrying...")
-                        # Use last processed frame if available, otherwise skip
-                        if camera_id in processed_frames:
-                            continue
-                        else:
-                            # Create a black frame with error message
-                            h, w = 480, 640
-                            if camera_id in processed_frames and processed_frames[camera_id] is not None:
-                                h, w = processed_frames[camera_id].shape[:2]
-                            
-                            error_frame = np.zeros((h, w, 3), dtype=np.uint8)
-                            cv2.putText(error_frame, f"Camera {camera_id}: No Signal", 
-                                      (w//4, h//2), cv2.FONT_HERSHEY_SIMPLEX, 
-                                      1.0, (0, 0, 255), 2)
-                            processed_frames[camera_id] = error_frame
-                            continue
-                    
-                    # Update FPS counter
-                    self.fps_stats[camera_id]['frame_count'] += 1
-                    if self.fps_stats[camera_id]['frame_count'] % 100 == 0:
-                        elapsed = time() - self.fps_stats[camera_id]['start_time']
-                        fps = self.fps_stats[camera_id]['frame_count'] / elapsed if elapsed > 0 else 0
-                        logger.info(f"[AGENT:{camera_id}] Processing speed: {fps:.1f} FPS ({self.fps_stats[camera_id]['frame_count']} frames in {elapsed:.1f}s)")
-                        # Reset counters for more accurate recent FPS
-                        self.fps_stats[camera_id]['start_time'] = time()
-                        self.fps_stats[camera_id]['frame_count'] = 0
-                    
-                    # Process the frame
-                    processed_frame = self.process_frame(frame, camera_id)
-                    if processed_frame is not None:
-                        processed_frames[camera_id] = processed_frame
                 
-                # Create and display the grid view
-                if processed_frames:
-                    grid_view = self.create_grid_view(processed_frames)
-                    if grid_view is not None:
-                        cv2.imshow(window_name, grid_view)
+                # Better window positioning - spread them across the screen
+                # This gives each window its own space based on index
+                if len(self.streams) == 1:
+                    # Center window if only one camera
+                    cv2.moveWindow(window_name, 100, 50)
+                else:
+                    # Calculate positions to arrange windows in a grid-like pattern
+                    # but still as separate windows
+                    position_x = (i % 2) * 640 + 50  # Two columns
+                    position_y = (i // 2) * 400 + 50  # Multiple rows
+                    cv2.moveWindow(window_name, position_x, position_y)
+                    
+                logger.info(f"Created window for camera {camera_id}")
+            
+            # Start a thread for each camera
+            threads = []
+            stop_event = threading.Event()
+            
+            for camera_id in self.streams:
+                thread = threading.Thread(
+                    target=self._process_camera_stream,
+                    args=(camera_id, stop_event),
+                    daemon=True,
+                    name=f"camera-processor-{camera_id}"
+                )
+                threads.append(thread)
+                thread.start()
+                logger.info(f"Started processing thread for camera {camera_id}")
+            
+            # Main thread just waits for exit
+            try:
+                logger.info("Press 'q' in any window to exit")
+                while not stop_event.is_set():
+                    key = cv2.waitKey(100) & 0xFF
+                    if key == ord('q'):
+                        logger.info("Exit key pressed")
+                        stop_event.set()
+                        break
+            except KeyboardInterrupt:
+                logger.info("Keyboard interrupt received, exiting...")
+                stop_event.set()
+            
+            # Wait for threads to finish
+            for thread in threads:
+                thread.join(timeout=2.0)
+            
+            # Clean up
+            cv2.destroyAllWindows()
+            for camera_id in self.streams:
+                if camera_id in self.streams:
+                    self.streams[camera_id].release()
+            
+            logger.info("Processing stopped, all resources released")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in main loop: {e}")
+            cv2.destroyAllWindows()
+            return False
+            
+    def _process_camera_stream(self, camera_id, stop_event):
+        """Process a single camera stream in its own thread."""
+        logger.info(f"Processing camera {camera_id}")
+        
+        # Initialize frame counting for this camera
+        if camera_id not in self.fps_stats:
+            self.fps_stats[camera_id] = {
+                'start_time': time(),
+                'frame_count': 0
+            }
+        
+        window_name = f"Camera Stream - {camera_id}"
+        
+        while not stop_event.is_set():
+            try:
+                # Read frame from camera
+                stream = self.streams.get(camera_id)
+                if not stream:
+                    logger.error(f"No stream found for camera {camera_id}")
+                    break
+                    
+                ret, frame = stream.read()
+                if not ret:
+                    logger.warning(f"Could not read frame from camera {camera_id}")
+                    time.sleep(0.1)  # Avoid tight loop
+                    continue
                 
-                # Check for 'q' key press
+                # Process the frame
+                processed_frame = self.process_frame(frame, camera_id)
+                
+                # Update FPS counter
+                self.update_fps(camera_id)
+                
+                # Display FPS on frame
+                fps = self.fps_stats[camera_id].get('current_fps', 0)
+                cv2.putText(processed_frame, f"FPS: {fps:.1f}", (10, 60), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3)
+                cv2.putText(processed_frame, f"FPS: {fps:.1f}", (10, 60), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+                
+                # Display the processed frame
+                cv2.imshow(window_name, processed_frame)
+                
+                # Check for quit key
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord('q'):
-                    logger.info("[AGENT] Stopping due to user input (q)...")
+                    logger.info(f"Exit key pressed in window {window_name}")
+                    stop_event.set()
                     break
-                
-                # Add a small sleep to reduce CPU usage
-                sleep(0.01)
-                
-        except KeyboardInterrupt:
-            logger.info("[AGENT] Stopping due to keyboard interrupt...")
-        except Exception as e:
-            logger.error(f"[AGENT] Processing error: {e}")
-            import traceback
-            logger.error("[AGENT] Stack trace: " + traceback.format_exc())
-        finally:
-            # Release all streams and close windows
-            for camera_id, stream in self.streams.items():
-                if stream:
-                    stream.release()
-            cv2.destroyAllWindows()
-            logger.info("[AGENT] Processing stopped.")
+                    
+            except Exception as e:
+                logger.error(f"Error processing camera {camera_id}: {e}")
+                time.sleep(0.5)  # Avoid tight loop on error
 
 if __name__ == "__main__":
     agent = SpherexAgent()

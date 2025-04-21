@@ -7,19 +7,22 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
+# Set default values
+CAMERA="all"
+CAMERA_URL=""
+
 # Function to display help
 show_help() {
     echo -e "${CYAN}Usage: ./run.sh [OPTIONS]${NC}"
     echo
     echo "Options:"
-    echo "  --help        Show this help message"
-    echo "  --config      Show current camera configuration"
-    echo "  --enable=CAM  Enable a specific camera (e.g., --enable=webcam)"
-    echo "  --disable=CAM Disable a specific camera"
+    echo "  -c, --camera CAMERA_ID    Specify camera ID to run (e.g., '1', '2', 'main')"
+    echo "  -u, --url CAMERA_URL      Directly specify camera URL"
+    echo "  -h, --help                Show this help message"
     echo
     echo "Examples:"
-    echo "  ./run.sh --enable=webcam --enable=cctv"
-    echo "  ./run.sh --disable=webcam"
+    echo "  ./run.sh -c 1 -c 2"
+    echo "  ./run.sh -u rtsp://example.com/camera1"
     echo
 }
 
@@ -37,48 +40,27 @@ show_config() {
     echo
 }
 
-# Process command line arguments
-for arg in "$@"; do
-    case $arg in
-        --help)
-            show_help
-            exit 0
-            ;;
-        --config)
-            show_config
-            exit 0
-            ;;
-        --enable=*)
-            camera="${arg#*=}"
-            camera_upper=$(echo "$camera" | tr '[:lower:]' '[:upper:]')
-            
-            # Check if ENABLE_ entry exists already
-            if grep -q "^ENABLE_$camera_upper=" .env; then
-                # Update existing entry
-                sed -i'' -e "s/^ENABLE_$camera_upper=.*/ENABLE_$camera_upper=true/" .env
-            else
-                # Add new entry
-                echo "ENABLE_$camera_upper=true" >> .env
-            fi
-            
-            echo -e "${GREEN}Enabled camera: $camera${NC}"
-            ;;
-        --disable=*)
-            camera="${arg#*=}"
-            camera_upper=$(echo "$camera" | tr '[:lower:]' '[:upper:]')
-            
-            # Check if ENABLE_ entry exists already
-            if grep -q "^ENABLE_$camera_upper=" .env; then
-                # Update existing entry
-                sed -i'' -e "s/^ENABLE_$camera_upper=.*/ENABLE_$camera_upper=false/" .env
-            else
-                # Add new entry
-                echo "ENABLE_$camera_upper=false" >> .env
-            fi
-            
-            echo -e "${YELLOW}Disabled camera: $camera${NC}"
-            ;;
-    esac
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -c|--camera)
+      CAMERA="$2"
+      shift 2
+      ;;
+    -u|--url)
+      CAMERA_URL="$2"
+      shift 2
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1"
+      echo "Use --help for usage information"
+      exit 1
+      ;;
+  esac
 done
 
 # Display banner
@@ -89,13 +71,27 @@ echo -e "==================================${NC}"
 # Display current camera settings
 show_config
 
-# Activate virtual environment
+# Enable virtual environment if it exists
 if [ -d "venv" ]; then
     echo -e "${CYAN}Activating virtual environment...${NC}"
     source venv/bin/activate
 else
     echo -e "${RED}Error: Virtual environment not found.${NC}"
     exit 1
+fi
+
+# Set the camera URL as environment variable if provided
+if [ -n "$CAMERA_URL" ]; then
+  export CAMERA_URL_$CAMERA="$CAMERA_URL"
+  echo -e "${GREEN}Set CAMERA_URL_$CAMERA=$CAMERA_URL${NC}"
+fi
+
+# If specific camera is requested, pass it as an environment variable
+if [ "$CAMERA" != "all" ]; then
+  export RUN_CAMERA_ID="$CAMERA"
+  echo -e "${GREEN}Running camera: $CAMERA${NC}"
+else
+  echo -e "${GREEN}Running all configured cameras${NC}"
 fi
 
 # Clear Python cache
