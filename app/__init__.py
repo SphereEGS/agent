@@ -1,16 +1,16 @@
 import os
-import cv2
-import requests
 from datetime import datetime
 from time import sleep, time
 
-# Direct imports (no package imports)
-from app.camera import InputStream  # Change to relative import
-from app.config import logger, CAMERA_URL, PROCESS_EVERY, GATE, API_BASE_URL
+import cv2
+import requests
+
+from app.camera import InputStream
+from app.config import API_BASE_URL, CAMERA_URL, GATE, PROCESS_EVERY, logger
 from app.gate import GateControl
 from app.lpr_model import PlateProcessor
-from app.vehicle_tracking import VehicleTracker
 from app.sync import SyncManager
+from app.vehicle_tracking import VehicleTracker
 
 
 class SpherexAgent:
@@ -42,8 +42,8 @@ class SpherexAgent:
 
     def log_gate_entry(self, plate, frame, is_authorized):
         try:
-            frame_with_text = self.model.add_text_to_image(frame, plate)
-            frame_with_roi = self.model.visualize_roi(frame_with_text)
+            frame_with_text = self.processor.add_text_to_image(frame, plate)
+            frame_with_roi = self.processor.visualize_roi(frame_with_text)
             temp_file = "gate_entry.jpg"
             cv2.imwrite(temp_file, frame_with_roi)
 
@@ -51,7 +51,7 @@ class SpherexAgent:
                 "gate": GATE,
                 "license_plate": plate,
                 "authorized": is_authorized,
-                "imagex": temp_file,
+                "image": temp_file,
                 "access_type": "Entry"
             }
 

@@ -90,29 +90,6 @@ YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "models/yolo11n.pt")
 # Update interval
 UPDATE_INTERVAL = int(os.getenv("UPDATE_INTERVAL", "600"))
 
-# Gate controllers
-CONTROLLERS = {
-    "entry": {
-        "ip": os.getenv(
-            "ENTRY_CONTROLLER_IP", os.getenv("CONTROLLER_IP", "127.0.0.1")
-        ),
-        "user": os.getenv(
-            "ENTRY_CONTROLLER_USER", os.getenv("CONTROLLER_USER", "test")
-        ),
-        "password": os.getenv(
-            "ENTRY_CONTROLLER_PASSWORD",
-            os.getenv("CONTROLLER_PASSWORD", "E512512A"),
-        ),
-        "door_id": os.getenv("ENTRY_DOOR_ID", os.getenv("DOOR_ID", 1)),
-    },
-    "exit": {
-        "ip": os.getenv("EXIT_CONTROLLER_IP", ""),
-        "user": os.getenv("EXIT_CONTROLLER_USER", "test"),
-        "password": os.getenv("EXIT_CONTROLLER_PASSWORD", "E512512A"),
-        "door_id": os.getenv("EXIT_DOOR_ID", 1),
-    },
-}
-
 # Backward compatibility
 CONTROLLER_IP = os.getenv("CONTROLLER_IP", "127.0.0.1")
 CONTROLLER_USER = os.getenv("CONTROLLER_USER", "test")

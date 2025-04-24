@@ -3,25 +3,29 @@ import urllib3
 import threading
 import socketio  # python-socketio client
 
-from app.config import CONTROLLERS, logger, SOCKETIO_SERVER, SOCKETIO_NAMESPACE
+# Import constants directly instead of the CONTROLLERS dictionary
+from app.config import (
+    logger,
+    SOCKETIO_SERVER,
+    SOCKETIO_NAMESPACE,
+    CONTROLLER_IP,
+    CONTROLLER_USER,
+    CONTROLLER_PASSWORD,
+    DOOR_ID,
+)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class GateControl:
-    def __init__(self, gate_type: str = "entry"):
-        self.gate_type: str = gate_type
-        if gate_type not in CONTROLLERS or not CONTROLLERS[gate_type]["ip"]:
-            logger.warning(f"No controller configuration for {gate_type}. Gate control disabled.")
-            self.enabled: bool = False
-            return
-
+    # Removed gate_type from __init__
+    def __init__(self):
+        # Use imported constants directly
         self.enabled: bool = True
-        controller: dict = CONTROLLERS[gate_type]
-        self.base_url: str = f"https://{controller['ip']}/api"
-        self.door_id: str = controller["door_id"]
-        self.username: str = controller["user"]
-        self.password: str = controller["password"]
+        self.base_url: str = f"https://{CONTROLLER_IP}/api"
+        self.door_id: str = str(DOOR_ID)
+        self.username: str = CONTROLLER_USER
+        self.password: str = CONTROLLER_PASSWORD
         self.session_id: str | None = None
         self.lock = threading.Lock()
         self.sio: socketio.Client | None = None
@@ -29,16 +33,20 @@ class GateControl:
         self.login()
 
     def _connect_socketio(self):
-        """Connect to local Socket.IO server and emit 'connect_agent' event with hardcoded agent and gate."""
+        """Connect to local Socket.IO server and emit 'connect_agent' event."""
         try:
             self.sio = socketio.Client(logger=True, engineio_logger=True)
             self.sio.connect(SOCKETIO_SERVER, namespaces=[SOCKETIO_NAMESPACE])
+            # Updated payload: Removed gate_type reference
+            # Assuming the server might still expect a 'gates' list,
+            # perhaps with the door ID or a generic identifier.
+            # If the server doesn't need 'gates', this key can be removed.
             payload = {
-                "agent": "AGENT-123",
-                "gates": [self.gate_type]
+                "agent": "AGENT-123", # Consider making agent ID configurable too
+                "gates": [self.door_id] # Example: Using door_id as the gate identifier
             }
             self.sio.emit('connect_agent', payload, namespace='/spherex')
-            logger.info(f"Emitted 'connect_agent' event with payload {payload} to Socket.IO server at localhost:9001/spherex and staying connected")
+            logger.info(f"Emitted 'connect_agent' event with payload {payload} to Socket.IO server at {SOCKETIO_SERVER}{SOCKETIO_NAMESPACE} and staying connected")
         except Exception as e:
             logger.error(f"Socket.IO connection failed: {e}")
             self.sio = None
@@ -58,14 +66,17 @@ class GateControl:
             )
             response.raise_for_status()
             self.session_id = response.json()["session_id"]
-            logger.info(f"[OK] Session id updated for {self.gate_type}: {self.session_id}")
+            # Updated logging: Removed gate_type reference
+            logger.info(f"[OK] Session id updated: {self.session_id}")
         except Exception as e:
-            logger.error(f"Failed to login to {self.gate_type} gate: {str(e)}")
+            # Updated logging: Removed gate_type reference
+            logger.error(f"Failed to login to controller at {CONTROLLER_IP}: {str(e)}")
             raise
 
     def _call_api(self, endpoint, action):
         if not self.enabled:
-            logger.info(f"{action} skipped - {self.gate_type} gate control disabled")
+             # Updated logging: Removed gate_type reference
+            logger.info(f"{action} skipped - gate control disabled")
             return
 
         url = f"{self.base_url}/doors/{endpoint}"
@@ -81,15 +92,18 @@ class GateControl:
             "bs-session-id": self.session_id,
             "Content-Type": "application/json",
         }
-        logger.info(f"{action} {self.gate_type} door")
+         # Updated logging: Removed gate_type reference
+        logger.info(f"{action} door {self.door_id}")
         logger.info(f"Headers: {headers}")
         response = requests.post(
             url, json=payload, headers=headers, verify=False
         )
         if response.ok:
-            logger.info(f"{action} completed for {self.gate_type}")
+             # Updated logging: Removed gate_type reference
+            logger.info(f"{action} completed for door {self.door_id}")
         else:
-            logger.error(f"Error during {action} for {self.gate_type}: {response.text}")
+             # Updated logging: Removed gate_type reference
+            logger.error(f"Error during {action} for door {self.door_id}: {response.text}")
 
     def open(self):
         self._call_api("open", "🚪 Open")
