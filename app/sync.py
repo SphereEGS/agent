@@ -24,7 +24,7 @@ class SyncManager:
         try:
             logger.info(f"Updating allowed plates for {GATE}")
             response = requests.get(
-                f"http://localhost:8001/api/method/spherex.api.license_plate.get_authorized_plates",
+                f"{API_BASE_URL}/api/method/spherex.api.license_plate.get_authorized_plates",
                 params={"gate": GATE},
                 verify=False
             )
