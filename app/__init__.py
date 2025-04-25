@@ -40,11 +40,12 @@ class SpherexAgent:
             logger.error(f"[AGENT] Failed to initialize input stream: {e}")
             return False
 
-    def log_gate_entry(self, plate, frame, is_authorized):
+    def log_gate_entry(self, plate, frame_to_log, is_authorized):
+        """Logs the gate entry with the provided frame."""
         try:
-            frame_with_text = self.processor.add_text_to_image(frame, plate)
+            frame_with_text = self.processor.add_text_to_image(frame_to_log, plate)
             frame_with_roi = self.processor.visualize_roi(frame_with_text)
-            temp_file = "gate_entry.jpg"
+            temp_file = f"gate_entry_{plate}_{time()}.jpg"
             cv2.imwrite(temp_file, frame_with_roi)
 
             log_data = {
@@ -61,19 +62,27 @@ class SpherexAgent:
                     f"{API_BASE_URL}/api/method/spherex.api.upload_file",
                     files=files,
                 )
-                log_data["image"] = upload_response.json()["message"][
-                    "file_url"
-                ]
+                upload_response.raise_for_status()
+                file_url = upload_response.json()["message"]["file_url"]
+                log_data["image"] = file_url
+                logger.info(f"[AGENT] Image uploaded successfully: {file_url}")
 
-            requests.post(
+            logger.info(f"[AGENT] Logging gate entry for plate {plate}...")
+            log_response = requests.post(
                 f"{API_BASE_URL}/api/resource/Gate Entry Log",
                 data=log_data,
             )
+            logger.info(f"[AGENT] Gate entry logged successfully for plate {plate}.")
         except Exception as e:
-            logger.error(f"❌ Error logging entry: {e}")
+            logger.error(f"❌ Error logging entry for plate {plate}: {e}")
         finally:
             if os.path.exists(temp_file):
-                os.remove(temp_file)
+                try:
+                    os.remove(temp_file)
+                    logger.debug(f"[AGENT] Removed temporary file: {temp_file}")
+                except Exception as e:
+                    logger.error(f"❌ Error removing temporary file {temp_file}: {e}")
+
 
     def process_frame(self, frame):
         """Process a single frame"""
@@ -113,35 +122,45 @@ class SpherexAgent:
                 )
                 try:
                     # Store the previous count of detected plates
-                    prev_plate_count = len(
-                        self.vehicle_tracker.detected_plates
-                    )
                     prev_plates = set(
                         self.vehicle_tracker.detected_plates.items()
                     )
 
                     # Detect vehicles and license plates
-                    detected, vis_frame = self.vehicle_tracker.detect_vehicles(
+                    # Assume detect_vehicles uses 'frame' for inference and returns:
+                    # detected (bool), vis_frame (for display), recognized_plates (dict: {track_id: (plate_text, frame_used_for_ocr)})
+                    # Modify VehicleTracker accordingly if it doesn't return the frame used for OCR.
+                    # For now, we assume the 'frame' passed to detect_vehicles is the one used if recognition occurs.
+                    detected, vis_frame, recognized_plates_data = self.vehicle_tracker.detect_vehicles(
                         frame
                     )
 
                     if detected and vis_frame is not None:
-                        # Use the visualization frame that comes from the tracker
+                        # Use the visualization frame that comes from the tracker for display
                         display_frame = vis_frame
 
-                        # Only log plate info if there's a change in detected plates
+                        # Get current plates from the tracker (might include plates detected in previous frames)
                         curr_plates = set(
                             self.vehicle_tracker.detected_plates.items()
                         )
-                        new_plates = curr_plates - prev_plates
+                        # Identify plates newly confirmed in *this* processing cycle
+                        newly_confirmed_plates = {
+                            track_id: plate_text for track_id, (plate_text, _) in recognized_plates_data.items()
+                            if (track_id, plate_text) not in prev_plates
+                        }
 
-                        if new_plates:
+
+                        if newly_confirmed_plates:
                             logger.info(
-                                f"[AGENT] Newly detected plates: {dict(new_plates)}"
+                                f"[AGENT] Newly confirmed plates: {newly_confirmed_plates}"
                             )
 
-                            # Process newly detected plates
-                            for track_id, plate_text in new_plates:
+                            # Process newly confirmed plates
+                            for track_id, plate_text in newly_confirmed_plates.items():
+                                # Retrieve the specific frame used for recognizing this plate
+                                # This frame should be returned by detect_vehicles or stored in the tracker
+                                _, frame_for_logging = recognized_plates_data[track_id]
+
                                 # Check if plate is authorized
                                 is_authorized = self.cache.is_authorized(
                                     plate_text
@@ -151,7 +170,6 @@ class SpherexAgent:
                                 )
 
                                 # Update the authorization status for display
-                                # Make sure the vehicle tracker's last recognized plate is updated
                                 self.vehicle_tracker.last_recognized_plate = (
                                     plate_text
                                 )
@@ -172,25 +190,26 @@ class SpherexAgent:
                                     f"[AGENT] [{timestamp}] Vehicle {track_id} with plate: {plate_text} - {auth_status}"
                                 )
 
-                                # Handle gate control
+                                # Handle gate control and log using the specific frame
                                 if is_authorized:
                                     logger.info(
                                         f"[GATE] Opening gate for authorized plate: {plate_text}"
                                     )
                                     # self.gate.open()
-                                    self.log_gate_entry(plate_text, frame, 1)
+                                    self.log_gate_entry(plate_text, frame_for_logging, 1) # Pass specific frame
                                     self.last_detection_time = current_time
                                 else:
                                     logger.info(
                                         f"[GATE] Not opening gate for unauthorized plate: {plate_text}"
                                     )
-                                    self.log_gate_entry(plate_text, frame, 0)
-                                    self.is_logged = True
+                                    self.log_gate_entry(plate_text, frame_for_logging, 0) # Pass specific frame
+                                    # self.is_logged = True # Consider if this flag is still needed/correct
+
                         elif self.frame_count % 200 == 0:
-                            # Log total plate count periodically
+                            # Log total plate count periodically if no new plates confirmed
                             plates = self.vehicle_tracker.detected_plates
                             logger.info(
-                                f"[AGENT] Total plates detected: {len(plates)}"
+                                f"[AGENT] Total plates currently tracked: {len(plates)}"
                             )
                     elif vis_frame is not None:
                         # Even if no detection, use the visualization frame which should have ROI
@@ -203,7 +222,7 @@ class SpherexAgent:
                             )
 
                 except Exception as e:
-                    logger.error(f"[AGENT] Frame processing error: {e}")
+                    logger.exception(f"[AGENT] Frame processing error: {e}") # Use logger.exception for traceback
                     # If no visualization available, make sure ROI is still drawn on display frame
                     if self.vehicle_tracker.roi_polygon is not None:
                         cv2.polylines(
@@ -221,15 +240,29 @@ class SpherexAgent:
                         f"[AGENT] In cooldown period, {self.detection_cooldown - time_since_last:.1f}s remaining"
                     )
 
+        # Display the frame (potentially with visualizations)
+        # Ensure ROI is always visible on the displayed frame if defined
+        if self.vehicle_tracker.roi_polygon is not None:
+             cv2.polylines(display_frame, [self.vehicle_tracker.roi_polygon], True, (0, 255, 255), 2) # Yellow ROI
+
+        # Display last recognized plate info
+        if self.vehicle_tracker.last_recognized_plate:
+            plate_text = self.vehicle_tracker.last_recognized_plate
+            auth_text = "AUTH" if self.vehicle_tracker.last_plate_authorized else "UNAUTH"
+            color = (0, 255, 0) if self.vehicle_tracker.last_plate_authorized else (0, 0, 255)
+            cv2.putText(display_frame, f"Last: {plate_text} ({auth_text})", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+
+
+        cv2.imshow("Spherex Agent Feed", display_frame)
         key = cv2.waitKey(1) & 0xFF
 
         # Allow quitting with 'q' key
         if key == ord("q"):
             logger.info("[AGENT] User pressed 'q', exiting")
-            self.stream.release()
+            if self.stream:
+                self.stream.release()
             cv2.destroyAllWindows()
             import sys
-
             sys.exit(0)
 
     def start(self):
@@ -245,45 +278,63 @@ class SpherexAgent:
         )
 
         try:
-            frame_count = 0
+            frame_read_count = 0 # Use a separate counter for FPS calculation
             start_time = time()
 
-            while self.stream:
+            while True: # Loop indefinitely until break
+                if not self.stream:
+                    logger.error("[AGENT] Stream is not available. Exiting.")
+                    break
+
                 # Read frame and check if successful
                 ret, frame = self.stream.read()
 
-                if not ret or frame is None:
-                    logger.warning("[AGENT] Failed to read frame, retrying...")
-                    # Wait a bit before retrying
-                    sleep(0.1)
-                    continue
+                if not ret:
+                    logger.warning("[AGENT] Failed to read frame, retrying or ending stream...")
+                    # Implement retry logic or check if stream ended
+                    if self.stream.is_file(): # Check if it's a file stream that ended
+                         logger.info("[AGENT] End of video file reached.")
+                         break
+                    sleep(0.5) # Wait longer before retrying live stream
+                    # Re-initialize stream if necessary
+                    if not self.initialize_stream():
+                         logger.error("[AGENT] Failed to re-initialize stream. Exiting.")
+                         break
+                    continue # Skip processing this cycle
 
-                # Calculate FPS every 100 frames
-                frame_count += 1
-                if frame_count % 100 == 0:
-                    elapsed = time() - start_time
-                    fps = frame_count / elapsed if elapsed > 0 else 0
+                if frame is None:
+                     logger.warning("[AGENT] Read successful but frame is None, skipping.")
+                     sleep(0.1)
+                     continue
+
+
+                # Calculate FPS periodically
+                frame_read_count += 1
+                current_time = time()
+                elapsed = current_time - start_time
+                if elapsed >= 5.0: # Calculate FPS every 5 seconds
+                    fps = frame_read_count / elapsed
                     logger.info(
-                        f"[AGENT] Processing speed: {fps:.1f} FPS ({frame_count} frames in {elapsed:.1f}s)"
+                        f"[AGENT] Processing speed: {fps:.1f} FPS ({frame_read_count} frames in {elapsed:.1f}s)"
                     )
-                    # Reset counters for more accurate recent FPS
-                    start_time = time()
-                    frame_count = 0
+                    # Reset counters
+                    start_time = current_time
+                    frame_read_count = 0
 
+                # Process the valid frame
                 self.process_frame(frame)
 
-                # Check for 'q' key press
-                if cv2.waitKey(1) & 0xFF == ord("q"):
-                    logger.info("[AGENT] Stopping due to user input (q)...")
-                    break
+                # Check for 'q' key press (handled within process_frame now)
+                # if cv2.waitKey(1) & 0xFF == ord("q"):
+                #    logger.info("[AGENT] Stopping due to user input (q)...")
+                #    break
 
-                # Add a small sleep to reduce CPU usage
-                sleep(0.01)
+                # Small sleep moved inside process_frame's waitKey or removed if waitKey is sufficient
 
         except KeyboardInterrupt:
             logger.info("[AGENT] Stopping due to keyboard interrupt...")
         except Exception as e:
-            logger.error(f"[AGENT] Processing error: {e}")
+            logger.exception(f"[AGENT] Unhandled error in main loop: {e}") # Use exception for traceback
         finally:
             if self.stream:
                 self.stream.release()
