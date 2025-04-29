@@ -575,6 +575,10 @@ class VehicleTracker:
                 cv2.putText(vis_frame, "ACTIVITY DETECTED", (w//2-150, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             
+            # Display the visualization frame in the Detections window
+            cv2.imshow('Detections', vis_frame)
+            cv2.waitKey(1)
+            
             # Return the visualization frame
             return True, vis_frame
 
