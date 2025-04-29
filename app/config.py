@@ -63,6 +63,26 @@ CAMERA_URL = os.getenv(
 )  # Camera source from .env
 logger.info(f"Using camera source: {CAMERA_URL}")
 
+# Load multiple camera URLs from environment variables
+CAMERA_URLS = {}
+
+# First add the main CAMERA_URL for backward compatibility
+CAMERA_URLS["main"] = CAMERA_URL
+
+# Scan for numbered camera URLs (CAMERA_URL_1, CAMERA_URL_2, etc.)
+for i in range(1, 10):  # Support up to 9 cameras
+    env_key = f"CAMERA_URL_{i}"
+    url = os.getenv(env_key)
+    if url:
+        CAMERA_URLS[f"camera_{i}"] = url
+        logger.info(f"Found additional camera: {env_key} = {url}")
+
+# If no numbered cameras found but main camera exists, use just the main camera
+if len(CAMERA_URLS) == 1:
+    logger.info("Using single camera mode with main camera")
+else:
+    logger.info(f"Using multi-camera mode with {len(CAMERA_URLS)} cameras")
+
 # Fallback configuration
 ALLOW_FALLBACK = (
     os.getenv("ALLOW_FALLBACK", "false").lower() == "true"

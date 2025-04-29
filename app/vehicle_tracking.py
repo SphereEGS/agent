@@ -15,36 +15,57 @@ from .lpr_model import PlateProcessor
 VEHICLE_CLASSES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
 
 class VehicleTracker:
-    def __init__(self, roi_config_path="config.json"):
-        logger.info("Initializing vehicle detection model...")
+    def __init__(self, camera_id="main", roi_config_path=None):
+        logger.info(f"[TRACKER:{camera_id}] Initializing vehicle detection model...")
         try:
+            # Store camera ID
+            self.camera_id = camera_id
+            
             # Ensure models directory exists
             os.makedirs("models", exist_ok=True)
             
             # Use absolute path for model
             model_path = osp.abspath(YOLO_MODEL_PATH)
-            logger.info(f"Loading YOLO model from: {model_path}")
+            logger.info(f"[TRACKER:{camera_id}] Loading YOLO model from: {model_path}")
             
             if not osp.exists(model_path):
-                logger.error(f"Model not found at {model_path}")
+                logger.error(f"[TRACKER:{camera_id}] Model not found at {model_path}")
                 raise FileNotFoundError(f"Model file not found: {model_path}")
                 
             try:
                 self.model = YOLO(model_path)
-                logger.info("YOLO model loaded successfully")
+                logger.info(f"[TRACKER:{camera_id}] YOLO model loaded successfully")
             except Exception as e:
-                logger.error(f"Error loading YOLO model: {str(e)}")
+                logger.error(f"[TRACKER:{camera_id}] Error loading YOLO model: {str(e)}")
                 raise
+            
+            # Determine ROI config path if not provided
+            if roi_config_path is None:
+                # Check for camera-specific config first
+                config_dir = "configs"
+                camera_config_path = f"{config_dir}/roi_{camera_id}.json"
+                
+                if os.path.exists(camera_config_path):
+                    roi_config_path = camera_config_path
+                    logger.info(f"[TRACKER:{camera_id}] Using camera-specific ROI configuration: {camera_config_path}")
+                elif camera_id == "main" and os.path.exists("config.json"):
+                    # Fallback to legacy config for main camera
+                    roi_config_path = "config.json"
+                    logger.info(f"[TRACKER:{camera_id}] Using legacy ROI configuration: {roi_config_path}")
+                else:
+                    # No config found
+                    roi_config_path = None
+                    logger.warning(f"[TRACKER:{camera_id}] No ROI configuration found for camera.")
             
             # Load ROI configuration
             self.original_roi = self._load_roi_polygon(roi_config_path)
             self.roi_polygon = self.original_roi  # Will be scaled per frame later
             
             if self.original_roi is not None:
-                logger.info(f"ROI loaded with {len(self.original_roi)} points")
-                logger.debug(f"Original ROI points: {self.original_roi.tolist()}")
+                logger.info(f"[TRACKER:{camera_id}] ROI loaded with {len(self.original_roi)} points")
+                logger.debug(f"[TRACKER:{camera_id}] Original ROI points: {self.original_roi.tolist()}")
             else:
-                logger.warning("No ROI configuration found. Using full frame.")
+                logger.warning(f"[TRACKER:{camera_id}] No ROI configuration found. Using full frame.")
                 
             # Initialize rest of components
             self.roi_lock = threading.Lock()
@@ -79,7 +100,7 @@ class VehicleTracker:
                 self.last_plate_authorized = False
             
         except Exception as e:
-            logger.error(f"Error in VehicleTracker initialization: {str(e)}")
+            logger.error(f"[TRACKER:{camera_id}] Error in VehicleTracker initialization: {str(e)}")
             raise
 
     def _load_roi_polygon(self, config_path):
@@ -89,7 +110,7 @@ class VehicleTracker:
             
         try:
             if not os.path.exists(config_path):
-                logger.warning(f"ROI config file not found: {config_path}")
+                logger.warning(f"[TRACKER:{self.camera_id}] ROI config file not found: {config_path}")
                 return None
                 
             with open(config_path, "r") as f:
@@ -103,9 +124,13 @@ class VehicleTracker:
                 self.display_dimensions = config_data.get("display_dimensions", None)
                 self.scale_ratios = config_data.get("scale_ratios", None)
                 
+                # Verify camera ID matches if it exists in config
+                if "camera_id" in config_data and config_data["camera_id"] != self.camera_id:
+                    logger.warning(f"[TRACKER:{self.camera_id}] ROI config was created for camera '{config_data['camera_id']}', but being used with '{self.camera_id}'")
+                
                 # Use original points for ROI
                 roi_points = config_data["original_points"]
-                logger.info(f"Loaded ROI in new format from {config_path}")
+                logger.info(f"[TRACKER:{self.camera_id}] Loaded ROI in new format from {config_path}")
             else:
                 # Old format - just a list of points
                 roi_points = config_data
@@ -113,18 +138,18 @@ class VehicleTracker:
                 self.original_dimensions = None
                 self.display_dimensions = None
                 self.scale_ratios = None
-                logger.info(f"Loaded ROI in old format from {config_path}")
+                logger.info(f"[TRACKER:{self.camera_id}] Loaded ROI in old format from {config_path}")
                 
             if not isinstance(roi_points, list) or len(roi_points) < 3:
-                logger.warning(f"Invalid ROI points format in {config_path}: {roi_points}")
+                logger.warning(f"[TRACKER:{self.camera_id}] Invalid ROI points format in {config_path}: {roi_points}")
                 return None
                 
             # Convert to numpy array
             roi_polygon = np.array(roi_points, dtype=np.int32)
-            logger.info(f"Loaded ROI from {config_path} with {len(roi_polygon)} points: {roi_polygon.tolist()}")
+            logger.info(f"[TRACKER:{self.camera_id}] Loaded ROI from {config_path} with {len(roi_polygon)} points")
             return roi_polygon
         except Exception as e:
-            logger.error(f"Error loading ROI polygon: {str(e)}")
+            logger.error(f"[TRACKER:{self.camera_id}] Error loading ROI polygon: {str(e)}")
         return None
 
     def _scale_roi_to_frame(self, frame):
@@ -144,7 +169,7 @@ class VehicleTracker:
                 if not hasattr(self, 'last_recognized_plate'):
                     self.last_recognized_plate = None
                     self.last_plate_authorized = False
-                logger.info(f"[TRACKER] Stored first frame with dimensions {frame_w}x{frame_h} as reference")
+                logger.info(f"[TRACKER:{self.camera_id}] Stored first frame with dimensions {frame_w}x{frame_h} as reference")
             
             # Create a copy of the original ROI
             scaled_roi = self.original_roi.copy()
@@ -153,13 +178,13 @@ class VehicleTracker:
             if hasattr(self, 'original_dimensions') and self.original_dimensions:
                 orig_width, orig_height = self.original_dimensions
                 
-                logger.debug(f"[TRACKER] Using dimensions from config - Original: {orig_width}x{orig_height}, Frame: {frame_w}x{frame_h}")
+                logger.debug(f"[TRACKER:{self.camera_id}] Using dimensions from config - Original: {orig_width}x{orig_height}, Frame: {frame_w}x{frame_h}")
                 
                 # Calculate direct scaling factors from original frame to current frame
                 scale_x = frame_w / orig_width
                 scale_y = frame_h / orig_height
                 
-                logger.debug(f"[TRACKER] Using precise ROI scaling factors from config: {scale_x:.4f}x{scale_y:.4f}")
+                logger.debug(f"[TRACKER:{self.camera_id}] Using precise ROI scaling factors from config: {scale_x:.4f}x{scale_y:.4f}")
             else:
                 # If frame dimensions match the first frame, no scaling needed
                 if (frame_w, frame_h) == self.first_frame_dims:
@@ -169,13 +194,13 @@ class VehicleTracker:
                 ref_width, ref_height = self.first_frame_dims
                 
                 # Log scaling operation
-                logger.debug(f"[TRACKER] Scaling ROI from {ref_width}x{ref_height} to {frame_w}x{frame_h}")
+                logger.debug(f"[TRACKER:{self.camera_id}] Scaling ROI from {ref_width}x{ref_height} to {frame_w}x{frame_h}")
                 
                 # Calculate scale factors
                 scale_x = frame_w / ref_width
                 scale_y = frame_h / ref_height
                 
-                logger.debug(f"[TRACKER] Using estimated ROI scaling factors: {scale_x:.4f}x{scale_y:.4f}")
+                logger.debug(f"[TRACKER:{self.camera_id}] Using estimated ROI scaling factors: {scale_x:.4f}x{scale_y:.4f}")
             
             # Scale the ROI coordinates
             scaled_roi[:, 0] = (scaled_roi[:, 0] * scale_x).astype(np.int32)

@@ -194,17 +194,41 @@ class PlateProcessor:
             logger.warning(f"Could not add text to image: {str(e)}")
             return image
 
-    def visualize_roi(self, image):
+    def visualize_roi(self, image, roi_polygon=None):
         """
         Draw ROI visualization on the image for gate entry logging.
         If no ROI is available, returns the original image.
+        
+        Args:
+            image (numpy.ndarray): The input image
+            roi_polygon (numpy.ndarray, optional): ROI polygon points. If None, returns the original image.
+        
+        Returns:
+            numpy.ndarray: Image with ROI drawn
         """
-        try:
-            # Just return the original image if we don't have any ROI to visualize
-            # This could be enhanced later to draw any known ROI from vehicle_tracking
+        if image is None:
+            return None
+        
+        if roi_polygon is None:
+            # Return original image if no ROI provided
             return image
+        
+        try:
+            # Create a copy to avoid modifying the original
+            result = image.copy()
+            
+            # Draw the ROI polygon
+            cv2.polylines(result, [roi_polygon], True, (0, 255, 0), 3)
+            
+            # Add some transparency inside the ROI
+            overlay = result.copy()
+            cv2.fillPoly(overlay, [roi_polygon], (0, 200, 0, 50))
+            alpha = 0.15
+            cv2.addWeighted(overlay, alpha, result, 1 - alpha, 0, result)
+            
+            return result
         except Exception as e:
-            logger.error(f"Error visualizing ROI: {str(e)}")
+            logger.warning(f"Error visualizing ROI: {str(e)}")
             return image
 
     def process_vehicle_image(self, vehicle_image, save_path=None):

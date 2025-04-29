@@ -3,16 +3,19 @@ import os
 import time
 import threading
 import queue
-from .config import CAMERA_URL, logger, ALLOW_FALLBACK, FRAME_WIDTH, FRAME_HEIGHT
+from .config import CAMERA_URLS, CAMERA_URL, logger, ALLOW_FALLBACK, FRAME_WIDTH, FRAME_HEIGHT
 
 class InputStream:
     """
     Camera class to handle video input from different sources (RTSP, webcam, video file)
     """
     
-    def __init__(self):
+    def __init__(self, camera_id="main"):
         """
         Initialize camera with the configured input source
+        
+        Args:
+            camera_id (str): The ID of the camera to use (default: "main")
         """
         self.cap = None
         self.frame_count = 0
@@ -22,6 +25,16 @@ class InputStream:
         self.height = FRAME_HEIGHT
         self.fps = 100  # Default FPS
         self.last_successful_read_time = 0
+        self.camera_id = camera_id
+        
+        # Get the camera URL for the specified camera ID
+        if camera_id in CAMERA_URLS:
+            self.camera_url = CAMERA_URLS[camera_id]
+        else:
+            # Fallback to main camera if the specified ID is not found
+            logger.warning(f"[CAMERA] Camera ID '{camera_id}' not found, using main camera")
+            self.camera_id = "main"
+            self.camera_url = CAMERA_URL  # For backward compatibility
         
         # For threaded capture
         self.frame_queue = queue.Queue(maxsize=30)  # Buffer up to 30 frames
@@ -29,7 +42,7 @@ class InputStream:
         self.capture_thread = None
         
         # Initialize stream with configured source
-        logger.info(f"[CAMERA] Initializing input stream with source: {CAMERA_URL}")
+        logger.info(f"[CAMERA] Initializing input stream for camera {self.camera_id} with source: {self.camera_url}")
         self._connect_to_source()
         self._start_capture_thread()
         
@@ -37,13 +50,13 @@ class InputStream:
         """Connect to the video source with proper error handling."""
         try:
             # Clean the source string of any quotes or comments
-            source = CAMERA_URL.strip()
+            source = self.camera_url.strip()
             if source.startswith(('"', "'")):
                 source = source[1:-1]
             if '#' in source:
                 source = source.split('#')[0].strip()
             
-            logger.info(f"Attempting to connect to: {source}")
+            logger.info(f"[CAMERA:{self.camera_id}] Attempting to connect to: {source}")
             
             # Set RTSP transport to TCP for better reliability
             if source.startswith('rtsp://'):
@@ -54,9 +67,9 @@ class InputStream:
             
             # Wait for the connection to be established
             if not cap.isOpened():
-                logger.error(f"Failed to connect to: {source}")
+                logger.error(f"[CAMERA:{self.camera_id}] Failed to connect to: {source}")
                 if ALLOW_FALLBACK:
-                    logger.info("Falling back to local webcam (index 0)")
+                    logger.info(f"[CAMERA:{self.camera_id}] Falling back to local webcam (index 0)")
                     cap = cv2.VideoCapture(0)
                     if not cap.isOpened():
                         raise RuntimeError("Failed to connect to webcam")
@@ -66,7 +79,7 @@ class InputStream:
             # Get the original frame size
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            logger.info(f"Connected to camera with resolution: {width}x{height}")
+            logger.info(f"[CAMERA:{self.camera_id}] Connected to camera with resolution: {width}x{height}")
             
             # Use the window size from configuration
             target_width = FRAME_WIDTH
@@ -87,7 +100,7 @@ class InputStream:
             new_width = new_width - (new_width % 2)
             new_height = new_height - (new_height % 2)
             
-            logger.info(f"Resizing frames to: {new_width}x{new_height}")
+            logger.info(f"[CAMERA:{self.camera_id}] Resizing frames to: {new_width}x{new_height}")
             
             # Store the resize dimensions
             self.resize_dimensions = (new_width, new_height)
@@ -98,9 +111,9 @@ class InputStream:
             return cap
             
         except Exception as e:
-            logger.error(f"Error connecting to camera: {str(e)}")
+            logger.error(f"[CAMERA:{self.camera_id}] Error connecting to camera: {str(e)}")
             if ALLOW_FALLBACK:
-                logger.info("Attempting fallback to webcam...")
+                logger.info(f"[CAMERA:{self.camera_id}] Attempting fallback to webcam...")
                 cap = cv2.VideoCapture(0)
                 if not cap.isOpened():
                     raise RuntimeError("Failed to connect to webcam")
@@ -117,7 +130,7 @@ class InputStream:
         while not self.stop_event.is_set():
             try:
                 if not self.cap or not self.cap.isOpened():
-                    logger.warning("[CAMERA] Camera not initialized in thread, attempting to reconnect")
+                    logger.warning(f"[CAMERA:{self.camera_id}] Camera not initialized in thread, attempting to reconnect")
                     self.cap = self._connect_to_source()
                     time.sleep(reconnect_delay)
                     reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
@@ -126,7 +139,7 @@ class InputStream:
                 ret, frame = self.cap.read()
                 
                 if not ret:
-                    logger.warning("[CAMERA] Failed to read frame in thread, attempting reconnection")
+                    logger.warning(f"[CAMERA:{self.camera_id}] Failed to read frame in thread, attempting reconnection")
                     self.cap = self._connect_to_source()
                     time.sleep(reconnect_delay)
                     reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
@@ -147,7 +160,7 @@ class InputStream:
                         # Use INTER_LINEAR instead of INTER_AREA for potentially fewer warnings
                         frame = cv2.resize(frame, self.resize_dimensions, interpolation=cv2.INTER_LINEAR)
                     else:
-                        logger.warning("[CAMERA] Received invalid frame, skipping resize")
+                        logger.warning(f"[CAMERA:{self.camera_id}] Received invalid frame, skipping resize")
                 
                 # Reset reconnect delay on successful frame capture
                 reconnect_delay = 1.0
@@ -167,7 +180,7 @@ class InputStream:
                 self.last_successful_read_time = time.time()
                 
             except Exception as e:
-                logger.error(f"[CAMERA] Error in capture thread: {str(e)}")
+                logger.error(f"[CAMERA:{self.camera_id}] Error in capture thread: {str(e)}")
                 time.sleep(reconnect_delay)
                 reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
 
@@ -179,14 +192,14 @@ class InputStream:
         self.stop_event.clear()
         self.capture_thread = threading.Thread(target=self._capture_thread_function, daemon=True)
         self.capture_thread.start()
-        logger.info("[CAMERA] Started capture thread")
+        logger.info(f"[CAMERA:{self.camera_id}] Started capture thread")
     
     def read(self):
         """Read a frame from the frame queue."""
         try:
             # If capture thread is not running, restart it
             if self.capture_thread is None or not self.capture_thread.is_alive():
-                logger.warning("[CAMERA] Capture thread not running, restarting")
+                logger.warning(f"[CAMERA:{self.camera_id}] Capture thread not running, restarting")
                 self._start_capture_thread()
                 
             # Try to get a frame from the queue with timeout
@@ -194,44 +207,23 @@ class InputStream:
                 ret, frame = self.frame_queue.get(timeout=1.0)
                 return ret, frame
             except queue.Empty:
-                logger.warning("[CAMERA] No frames in queue, waiting for capture thread")
+                logger.warning(f"[CAMERA:{self.camera_id}] No frames in queue, waiting for capture thread")
                 # If no frames available after waiting, try direct capture as fallback
                 if self.cap and self.cap.isOpened():
                     ret, frame = self.cap.read()
-                    if ret:
-                        return ret, frame
-                
+                    if ret and frame is not None and hasattr(self, 'resize_dimensions'):
+                        frame = cv2.resize(frame, self.resize_dimensions, interpolation=cv2.INTER_LINEAR)
+                    return ret, frame
                 return False, None
-                
         except Exception as e:
-            logger.error(f"[CAMERA] Error reading frame: {str(e)}")
-            if ALLOW_FALLBACK:
-                logger.info("[CAMERA] Attempting fallback to webcam...")
-                self.cap = cv2.VideoCapture(0)
-                if not self.cap.isOpened():
-                    raise RuntimeError("Failed to connect to webcam")
-                return self.read()
-            raise
+            logger.error(f"[CAMERA:{self.camera_id}] Error reading frame: {str(e)}")
+            return False, None
     
     def release(self):
-        """
-        Release the camera and stop the capture thread
-        """
-        self.stop_event.set()  # Signal the thread to stop
-        
-        # Wait for the thread to finish with timeout
-        if self.capture_thread and self.capture_thread.is_alive():
-            self.capture_thread.join(timeout=3.0)
-            
+        """Release the camera and stop the capture thread."""
+        self.stop_event.set()
+        if self.capture_thread is not None and self.capture_thread.is_alive():
+            self.capture_thread.join(timeout=2.0)  # Wait for thread to finish with timeout
         if self.cap is not None:
             self.cap.release()
-            self.cap = None
-            
-        # Clear the frame queue
-        while not self.frame_queue.empty():
-            try:
-                self.frame_queue.get_nowait()
-            except queue.Empty:
-                break
-                
-        logger.info("[CAMERA] Released input stream and stopped capture thread")
+        logger.info(f"[CAMERA:{self.camera_id}] Released camera resources")

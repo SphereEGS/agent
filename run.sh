@@ -12,32 +12,73 @@ echo -e "${CYAN}=================================="
 echo -e "  SpherexAgent"
 echo -e "==================================${NC}"
 
-# Display current camera settings
-echo -e "${YELLOW}Current camera settings:${NC}"
-cat .env | grep "CAMERA_URL" | grep -v "^#"
+# Parse command-line arguments
+SETUP_MODE=false
+LIST_CAMERAS=false
+SETUP_ROI=false
 
-# Display optimization settings
-echo -e "${YELLOW}Optimization settings:${NC}"
-cat .env | grep "ROI_DETECTION" | grep -v "^#" || echo "Using default optimization settings"
-echo -e "${CYAN}-----------------------------------${NC}"
-echo -e "ROI-based vehicle detection reduces CPU usage"
-echo -e "by only processing frames when vehicles are"
-echo -e "present in the region of interest."
-echo -e "${CYAN}-----------------------------------${NC}"
+# Process command-line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --setup)
+            SETUP_MODE=true
+            shift
+            ;;
+        --list-cameras)
+            LIST_CAMERAS=true
+            shift
+            ;;
+        --setup-roi)
+            SETUP_ROI=true
+            shift
+            ;;
+        *)
+            # Skip unknown options
+            shift
+            ;;
+    esac
+done
 
 # Activate virtual environment
 if [ -d ".venv" ]; then
     echo -e "${CYAN}Activating virtual environment...${NC}"
     source .venv/bin/activate
 else
-    echo -e "${RED}Error: Virtual environment not found.${NC}"
-    exit 1
+    echo -e "${CYAN}Checking for venv...${NC}"
+    if [ -d "venv" ]; then
+        echo -e "${CYAN}Activating virtual environment from venv...${NC}"
+        source venv/bin/activate
+    else
+        echo -e "${RED}Error: Virtual environment not found.${NC}"
+        exit 1
+    fi
 fi
 
 # Clear Python cache
 echo -e "${CYAN}Clearing Python cache...${NC}"
 find . -name "__pycache__" -type d -exec rm -rf {} +
 find . -name "*.pyc" -delete
+
+# Handle setup mode if requested
+if [ "$SETUP_MODE" = true ]; then
+    echo -e "${CYAN}Running in setup mode${NC}"
+    python setup_cameras.py
+    exit 0
+fi
+
+# List cameras if requested
+if [ "$LIST_CAMERAS" = true ]; then
+    echo -e "${CYAN}Listing configured cameras${NC}"
+    python setup_cameras.py --list
+    exit 0
+fi
+
+# Setup ROI if requested
+if [ "$SETUP_ROI" = true ]; then
+    echo -e "${CYAN}Starting ROI configuration workflow${NC}"
+    python setup_cameras.py --configure
+    exit 0
+fi
 
 # Verify models exist
 if [ ! -f "models/yolo11n.pt" ] || [ ! -f "models/license_yolo8s_1024.pt" ]; then
@@ -46,7 +87,14 @@ if [ ! -f "models/yolo11n.pt" ] || [ ! -f "models/license_yolo8s_1024.pt" ]; the
     exit 1
 fi
 
+# Display current camera settings
+echo -e "${YELLOW}Current camera settings:${NC}"
+env | grep "CAMERA_URL" | grep -v "^#"
+
+# Create configs directory if it doesn't exist
+mkdir -p configs
+
 # Run the application
-echo -e "${GREEN}Starting SpherexAgent with CCTV camera...${NC}"
+echo -e "${GREEN}Starting SpherexAgent with multiple cameras...${NC}"
 echo -e "${YELLOW}Press Ctrl+C to stop the application${NC}"
 python main.py
