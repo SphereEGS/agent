@@ -18,7 +18,7 @@ class VehicleTracker:
     def __init__(self, camera_id="main", roi_config_path=None):
         logger.info(f"[TRACKER:{camera_id}] Initializing vehicle detection model...")
         try:
-            # Store camera ID
+            # Store camera ID for display and logging
             self.camera_id = camera_id
             
             # Ensure models directory exists
@@ -600,8 +600,9 @@ class VehicleTracker:
                 cv2.putText(vis_frame, "ACTIVITY DETECTED", (w//2-150, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             
-            # Display the visualization frame in the Detections window
-            cv2.imshow('Detections', vis_frame)
+            # Display the visualization frame in a camera-specific window
+            window_name = f'Detections - {self.camera_id}'
+            cv2.imshow(window_name, vis_frame)
             cv2.waitKey(1)
             
             # Return the visualization frame
