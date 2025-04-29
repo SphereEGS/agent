@@ -15,7 +15,8 @@ from .config import (
     DETECTION_IOU,
     ROI_DETECTION_ENABLED,
     ROI_DETECTION_COOLDOWN,
-    ROI_DETECTION_SKIP_FRAMES
+    ROI_DETECTION_SKIP_FRAMES,
+    ROI_OVERLAP_THRESHOLD
 )
 from .lpr_model import PlateProcessor
 
@@ -192,27 +193,60 @@ class VehicleTracker:
             return self.original_roi
 
     def _is_vehicle_in_roi(self, box):
-        """Check if vehicle's center point is within ROI."""
+        """
+        Check if vehicle is within ROI using intersection area.
+        A vehicle is considered in ROI if a significant portion of it is inside.
+        """
         if self.roi_polygon is None:
             return True
             
-        x1, y1, x2, y2 = map(int, box)
-        center_x = (x1 + x2) // 2
-        center_y = (y1 + y2) // 2
-        
-        with self.roi_lock:
-            try:
-                # Make sure we're using the properly scaled ROI from the current frame
-                result = cv2.pointPolygonTest(self.roi_polygon, (center_x, center_y), False)
-                return result >= 0
-            except Exception as e:
-                logger.error(f"ROI check error: {str(e)}")
-                return True
+        try:
+            with self.roi_lock:
+                # Extract coordinates and dimensions
+                x1, y1, x2, y2 = map(int, box)
+                frame_h, frame_w = self.roi_mask.shape[:2] if self.roi_mask is not None else (0, 0)
+                
+                # If we don't have a valid ROI mask, create a temporary one
+                if self.roi_mask is None or frame_h == 0 or frame_w == 0:
+                    dummy_shape = (1000, 1000)  # Default size if we don't know the frame size
+                    mask = np.zeros(dummy_shape, dtype=np.uint8)
+                    cv2.fillPoly(mask, [self.roi_polygon], 255)
+                else:
+                    mask = self.roi_mask
+                
+                # Create a vehicle mask
+                vehicle_mask = np.zeros_like(mask)
+                # Ensure coordinates are within bounds
+                x1 = max(0, min(x1, mask.shape[1]-1))
+                y1 = max(0, min(y1, mask.shape[0]-1))
+                x2 = max(0, min(x2, mask.shape[1]-1))
+                y2 = max(0, min(y2, mask.shape[0]-1))
+                # Draw vehicle rectangle
+                cv2.rectangle(vehicle_mask, (x1, y1), (x2, y2), 255, -1)
+                
+                # Calculate intersection
+                intersection = cv2.bitwise_and(vehicle_mask, mask)
+                intersection_area = cv2.countNonZero(intersection)
+                vehicle_area = (x2 - x1) * (y2 - y1)
+                
+                # Calculate ratio of intersection to vehicle area
+                if vehicle_area > 0:
+                    overlap_ratio = intersection_area / vehicle_area
+                    # Use the configurable ROI overlap threshold
+                    return overlap_ratio >= ROI_OVERLAP_THRESHOLD
+                
+                return False
+                
+        except Exception as e:
+            logger.error(f"ROI check error: {str(e)}")
+            return False  # Default to not in ROI on error
 
     def visualize_detection(self, frame, boxes, track_ids, class_ids):
         """Draw detection boxes, IDs and plates on frame"""
         vis_frame = frame.copy()
         # Draw vehicle boxes and info
+        roi_vehicles_only = []
+        
         for box, track_id, class_id in zip(boxes, track_ids, class_ids):
             if class_id not in VEHICLE_CLASSES:
                 continue
@@ -223,37 +257,47 @@ class VehicleTracker:
             # Check if vehicle is in ROI
             is_in_roi = self._is_vehicle_in_roi(box)
             
-            # Use different colors based on whether vehicle is in ROI
-            box_color = (0, 255, 0) if is_in_roi else (0, 165, 255)  # Green if in ROI, orange if not
-            
-            # Draw box
-            cv2.rectangle(vis_frame, (x1, y1), (x2, y2), box_color, 2)
-            
-            # Draw ID and class
-            label = f"ID: {track_id} {class_name}"
-            cv2.putText(vis_frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 
-                       0.6, (0, 0, 0), 2)  # Black outline
-            cv2.putText(vis_frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 
-                       0.6, (255, 255, 255), 1)  # White text
-            
-            # Draw plate if detected
-            if track_id in self.detected_plates:
-                plate_text = self.detected_plates[track_id]
-                # Draw plate text with thicker font and brighter color for better visibility of Arabic characters
-                cv2.putText(vis_frame, f"Plate: {plate_text}",
-                           (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX,
-                           0.7, (0, 0, 0), 3)  # Black outline
-                cv2.putText(vis_frame, f"Plate: {plate_text}",
-                           (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX,
-                           0.7, (0, 0, 255), 2)  # Red text
+            # Only display vehicles in ROI (strict ROI filtering)
+            if is_in_roi:
+                roi_vehicles_only.append((box, track_id, class_id))
                 
-                # Update last recognized plate
-                self.last_recognized_plate = plate_text
-                # Debug log to ensure we're seeing plate detections
-                logger.info(f"[TRACKER] Vehicle {track_id} has plate {plate_text}, updated last_recognized_plate")
-                # Check authorization (this is simplified, replace with your actual authorization logic)
-                self.last_plate_authorized = False  # Default to not authorized
+                # Use different colors based on whether vehicle is in ROI
+                box_color = (0, 255, 0)  # Green for vehicles in ROI
+                
+                # Draw box
+                cv2.rectangle(vis_frame, (x1, y1), (x2, y2), box_color, 2)
+                
+                # Draw ID and class
+                label = f"ID: {track_id} {class_name}"
+                cv2.putText(vis_frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.6, (0, 0, 0), 2)  # Black outline
+                cv2.putText(vis_frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 
+                           0.6, (255, 255, 255), 1)  # White text
+                
+                # Draw plate if detected
+                if track_id in self.detected_plates:
+                    plate_text = self.detected_plates[track_id]
+                    # Draw plate text with thicker font and brighter color for better visibility of Arabic characters
+                    cv2.putText(vis_frame, f"Plate: {plate_text}",
+                               (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX,
+                               0.7, (0, 0, 0), 3)  # Black outline
+                    cv2.putText(vis_frame, f"Plate: {plate_text}",
+                               (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX,
+                               0.7, (0, 0, 255), 2)  # Red text
+                    
+                    # Update last recognized plate
+                    self.last_recognized_plate = plate_text
+                    # Debug log to ensure we're seeing plate detections
+                    logger.info(f"[TRACKER] Vehicle {track_id} has plate {plate_text}, updated last_recognized_plate")
+                    # Check authorization (this is simplified, replace with your actual authorization logic)
+                    self.last_plate_authorized = False  # Default to not authorized
         
+        # Display count of vehicles in ROI
+        cv2.putText(vis_frame, f"Vehicles in ROI: {len(roi_vehicles_only)}", (10, 120), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
+        cv2.putText(vis_frame, f"Vehicles in ROI: {len(roi_vehicles_only)}", (10, 120), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 0), 1)  # Green text
+                
         # Always draw the last plate info section, even if empty
         h, w = vis_frame.shape[:2]
         
@@ -426,25 +470,32 @@ class VehicleTracker:
             
             # Check if any detected objects are in ROI
             vehicle_count = 0
+            
             if len(results) > 0 and hasattr(results[0], 'boxes'):
                 boxes = results[0].boxes.xyxy.cpu().numpy()
                 class_ids = results[0].boxes.cls.int().cpu().tolist()
-                
-                # Resize boxes to match the ROI mask scale
-                scale_x, scale_y = w/small_w, h/small_h
                 
                 # Check each box to see if it intersects with ROI
                 for box, class_id in zip(boxes, class_ids):
                     if class_id not in VEHICLE_CLASSES:
                         continue
                         
-                    # Get box center
+                    # Extract coordinates
                     x1, y1, x2, y2 = map(int, box)
-                    center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
                     
-                    # Check if center is in ROI
-                    if small_mask[center_y, center_x] > 0:
+                    # More stringent ROI check - create a vehicle box mask
+                    vehicle_mask = np.zeros_like(small_mask)
+                    cv2.rectangle(vehicle_mask, (x1, y1), (x2, y2), 255, -1)
+                    
+                    # Calculate overlap area
+                    intersection = cv2.bitwise_and(vehicle_mask, small_mask)
+                    intersection_area = cv2.countNonZero(intersection)
+                    vehicle_area = (x2 - x1) * (y2 - y1)
+                    
+                    # Check if enough of the vehicle is in the ROI
+                    if vehicle_area > 0 and intersection_area / vehicle_area >= ROI_OVERLAP_THRESHOLD:
                         vehicle_count += 1
+                        logger.debug(f"[TRACKER] Lightweight detection found vehicle with {intersection_area/vehicle_area:.1%} in ROI")
                 
             # Update detection state
             self.last_detection_count = vehicle_count
@@ -545,6 +596,7 @@ class VehicleTracker:
                         vehicles_in_roi = 0
                         vehicles_processed_for_plates = 0
                         
+                        # Separate detections inside and outside ROI
                         for box, track_id, class_id in zip(boxes, track_ids, class_ids):
                             if class_id not in VEHICLE_CLASSES:
                                 continue
@@ -552,12 +604,13 @@ class VehicleTracker:
                             # Check if vehicle is in ROI
                             is_in_roi = self._is_vehicle_in_roi(box)
                             
-                            # Update vehicle state for tracking
-                            self._update_vehicle_state(track_id, frame, box)
-                            
-                            # Only process license plates for vehicles in ROI
+                            # Only process and track vehicles in ROI - strict ROI filtering
                             if is_in_roi:
                                 vehicles_in_roi += 1
+                                
+                                # Update vehicle state for tracking
+                                self._update_vehicle_state(track_id, frame, box)
+                                
                                 # Only try to detect license plate if not already detected for this vehicle
                                 if track_id not in self.detected_plates and track_id in self.frame_buffer:
                                     # Process license plate if we have enough frames buffered
@@ -571,20 +624,29 @@ class VehicleTracker:
                                             self._process_plate(best_frame, track_id)
                                         else:
                                             logger.warning(f"[TRACKER] Could not select best frame for vehicle {track_id}")
+                            else:
+                                # For vehicles outside ROI, log but don't process them
+                                logger.debug(f"[TRACKER] Vehicle {track_id} ({VEHICLE_CLASSES.get(class_id, 'unknown')}) outside ROI, skipping")
                         
                         # Cleanup stale vehicles periodically
                         self._cleanup_stale_vehicles()
                         
                         if vehicles_in_roi > 0:
-                            logger.debug(f"[TRACKER] {vehicles_in_roi} vehicles in ROI, {vehicles_processed_for_plates} processed for plates")
+                            logger.info(f"[TRACKER] {vehicles_in_roi} vehicles in ROI, {vehicles_processed_for_plates} processed for plates")
+                            
+                            # Only set processing active if we actually found vehicles in ROI
+                            self.last_vehicle_detection_time = time.time()
+                        else:
+                            logger.debug("[TRACKER] No vehicles detected in ROI")
                         
                         # Draw all detections on the same frame
                         vis_frame = self.visualize_detection(vis_frame, boxes, track_ids, class_ids)
                     except Exception as e:
                         logger.error(f"[TRACKER] Error processing detection boxes: {str(e)}")
                 
-                # Keep full processing mode active by updating the timestamp
-                self.last_vehicle_detection_time = time.time()
+                # Only keep full processing mode active if we actually found vehicles in ROI
+                if vehicles_in_roi > 0:
+                    self.last_vehicle_detection_time = time.time()
             else:
                 # If no vehicles detected, add a message on the display frame
                 cv2.putText(vis_frame, "No vehicles in ROI - CPU idle", (10, 90), 
