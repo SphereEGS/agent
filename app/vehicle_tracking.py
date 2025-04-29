@@ -506,3 +506,61 @@ class VehicleTracker:
             
             # Return the visualization frame
             return True, vis_frame
+
+    def _extract_vehicle_image(self, frame, box):
+        """Extract vehicle region from frame with padding."""
+        try:
+            x1, y1, x2, y2 = map(int, box)
+            h, w = frame.shape[:2]
+            # Add padding around vehicle
+            pad_x = int((x2 - x1) * 0.1)
+            pad_y = int((y2 - y1) * 0.1)
+            x1 = max(0, x1 - pad_x)
+            y1 = max(0, y1 - pad_y)
+            x2 = min(w, x2 + pad_x)
+            y2 = min(h, y2 + pad_y)
+            return frame[y1:y2, x1:x2].copy()
+        except Exception as e:
+            logger.error(f"Error extracting vehicle image: {str(e)}")
+            return None
+
+    def _process_plate(self, vehicle_img, track_id):
+        """Process vehicle image to detect and recognize license plate."""
+        try:
+            plate_text, processed_image = self.plate_processor.process_vehicle_image(vehicle_img)
+            if plate_text:
+                self.detected_plates[track_id] = plate_text
+                logger.info(f"[TRACKER] Detected plate {plate_text} for vehicle {track_id}")
+                
+                # Update the last recognized plate for display
+                self.last_recognized_plate = plate_text
+                
+                # Default to unauthorized - the actual check happens in app/__init__.py
+                # when processing frame, and visualize_detection will be called again
+                self.last_plate_authorized = False
+                
+                return True
+            else:
+                logger.debug(f"[TRACKER] No plate detected for vehicle {track_id}")
+                return False
+        except Exception as e:
+            logger.error(f"[TRACKER] Error processing plate: {str(e)}")
+            return False
+
+    def _select_best_frame(self, frames_with_scores):
+        """Select the best frame from the buffer based on clarity score"""
+        if not frames_with_scores:
+            return None
+            
+        # Sort by clarity score (descending)
+        sorted_frames = sorted(frames_with_scores, key=lambda x: x[1], reverse=True)
+        
+        # Return the frame with the highest score
+        best_frame, best_score = sorted_frames[0]
+        logger.debug(f"[TRACKER] Selected best frame with quality score: {best_score:.2f}")
+        
+        return best_frame
+
+    def get_detected_plate(self, track_id):
+        """Get detected plate number for a vehicle if available."""
+        return self.detected_plates.get(track_id)
