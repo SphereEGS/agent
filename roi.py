@@ -3,12 +3,27 @@ import json
 from dotenv import load_dotenv
 import os
 import sys
+import argparse
 from app.config import FRAME_WIDTH, FRAME_HEIGHT
 
 load_dotenv()
 
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='ROI selection tool for SpherexAgent')
+parser.add_argument('--camera', type=str, default="main", help='Camera ID to configure (e.g., "main", "entry", "exit")')
+args = parser.parse_args()
+
+camera_id = args.camera
+print(f"Configuring ROI for camera: {camera_id}")
+
+# Get camera URL from environment variables based on camera ID
+if camera_id == "main":
+    camera_env_var = "CAMERA_URL"
+else:
+    camera_env_var = f"CAMERA_{camera_id.upper()}_URL"
+
 # Get video source from environment variables or use default
-CAMERA_URL = os.getenv("CAMERA_URL", "0")  # Default to local webcam
+CAMERA_URL = os.getenv(camera_env_var, "0")  # Default to local webcam
 VIDEO_PATH = os.getenv("VIDEO_PATH", "input/test_video3.mov")
 
 # Clean any quotes from CAMERA_URL
@@ -155,6 +170,7 @@ while True:
         
         # Also save the display polygon points for reference
         config_data = {
+            "camera_id": camera_id,
             "original_points": original_polygon_points,
             "display_points": polygon_points,
             "original_dimensions": [original_width, original_height],
@@ -162,8 +178,9 @@ while True:
             "scale_ratios": [scale_width_ratio, scale_height_ratio]
         }
         
-        # Save to config.json
-        save_path = "config.json"
+        # Save to config file with camera_id in the filename
+        os.makedirs("configs", exist_ok=True)
+        save_path = f"configs/roi_{camera_id}.json"
         with open(save_path, "w") as f:
             json.dump(config_data, f, indent=2)
         print(f"ROI configuration saved to {save_path}")
