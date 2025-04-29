@@ -101,6 +101,11 @@ DETECTION_CONF = float(os.getenv("DETECTION_CONF", "0.3"))
 DETECTION_IOU = float(os.getenv("DETECTION_IOU", "0.45"))
 TARGET_WIDTH = int(os.getenv("TARGET_WIDTH", "1280"))
 
+# Two-stage detection parameters
+ROI_DETECTION_ENABLED = os.getenv("ROI_DETECTION_ENABLED", "true").lower() == "true"
+ROI_DETECTION_COOLDOWN = float(os.getenv("ROI_DETECTION_COOLDOWN", "3.0"))
+ROI_DETECTION_SKIP_FRAMES = int(os.getenv("ROI_DETECTION_SKIP_FRAMES", "3"))
+
 # Arabic mapping
 ARABIC_MAPPING = {
     "0": "٠",

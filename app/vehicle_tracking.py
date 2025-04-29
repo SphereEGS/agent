@@ -8,7 +8,15 @@ import os.path as osp
 from collections import defaultdict
 from ultralytics import YOLO
 
-from .config import logger, YOLO_MODEL_PATH
+from .config import (
+    logger, 
+    YOLO_MODEL_PATH, 
+    DETECTION_CONF, 
+    DETECTION_IOU,
+    ROI_DETECTION_ENABLED,
+    ROI_DETECTION_COOLDOWN,
+    ROI_DETECTION_SKIP_FRAMES
+)
 from .lpr_model import PlateProcessor
 
 # Vehicle classes from COCO dataset that we want to detect
@@ -30,6 +38,7 @@ class VehicleTracker:
                 raise FileNotFoundError(f"Model file not found: {model_path}")
                 
             try:
+                # Initialize model in low CPU mode first (inference only, no tracking)
                 self.model = YOLO(model_path)
                 logger.info("YOLO model loaded successfully")
             except Exception as e:
@@ -57,6 +66,17 @@ class VehicleTracker:
             self.last_vehicle_tracking_time = {}
             self.frame_buffer = {}
             self.max_buffer_size = 5
+            
+            # Detection state
+            self.processing_mode = "lightweight"  # Start with lightweight detection
+            self.last_vehicle_detection_time = 0
+            self.detection_cooldown = ROI_DETECTION_COOLDOWN  # Seconds to stay in full processing mode
+            self.roi_mask = None
+            self.last_detection_count = 0
+            self.frame_skip_count = 0
+            
+            # Log initialization mode
+            logger.info(f"ROI-based detection mode: {'ENABLED' if ROI_DETECTION_ENABLED else 'DISABLED'}")
             
         except Exception as e:
             logger.error(f"Error in VehicleTracker initialization: {str(e)}")
@@ -340,6 +360,115 @@ class VehicleTracker:
             self.frame_buffer.pop(track_id, None)
             logger.info(f"Vehicle {track_id} tracking timed out")
 
+    def _create_roi_mask(self, frame_shape):
+        """Create a binary mask for the ROI region."""
+        if self.roi_polygon is None:
+            return None
+            
+        h, w = frame_shape[:2]
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(mask, [self.roi_polygon], 255)
+        return mask
+
+    def _check_vehicle_in_roi(self, frame, skip_frames=None):
+        """
+        Perform lightweight detection to check if any vehicles are in ROI.
+        Use a subsampled frame and simpler detection for efficiency.
+        """
+        # If ROI detection is disabled, always return True to process every frame
+        if not ROI_DETECTION_ENABLED:
+            return True
+            
+        # Use config skip frames or default
+        skip_frames = ROI_DETECTION_SKIP_FRAMES if skip_frames is None else skip_frames
+        
+        # Skip frames to reduce CPU load further
+        self.frame_skip_count += 1
+        if self.frame_skip_count < skip_frames:
+            # During skipped frames, return the last detection state
+            return self.last_detection_count > 0
+            
+        self.frame_skip_count = 0
+        
+        # Check if we're in cooldown period - continue full processing
+        current_time = time.time()
+        time_since_last = current_time - self.last_vehicle_detection_time
+        if time_since_last < self.detection_cooldown:
+            return True
+            
+        try:
+            # Create ROI mask if needed
+            if self.roi_mask is None or self.roi_mask.shape[:2] != frame.shape[:2]:
+                self.roi_mask = self._create_roi_mask(frame.shape)
+                
+            # If no ROI defined, process whole frame
+            if self.roi_mask is None:
+                return True
+                
+            # Downsample frame for faster processing
+            # Use a frame that's 1/4 size (1/16 the pixels) for initial screening
+            h, w = frame.shape[:2]
+            small_w, small_h = max(w//4, 320), max(h//4, 240)
+            small_frame = cv2.resize(frame, (small_w, small_h))
+            small_mask = cv2.resize(self.roi_mask, (small_w, small_h))
+                
+            # Run lightweight detection (no tracking)
+            results = self.model.predict(
+                small_frame,
+                conf=DETECTION_CONF*1.2,  # Slightly higher threshold for lightweight mode
+                iou=DETECTION_IOU,
+                classes=list(VEHICLE_CLASSES.keys()),
+                verbose=False,
+                max_det=5,  # Limit detections to improve speed
+                stream=False,
+                imgsz=small_w  # Explicitly use the smaller size
+            )
+            
+            # Check if any detected objects are in ROI
+            vehicle_count = 0
+            if len(results) > 0 and hasattr(results[0], 'boxes'):
+                boxes = results[0].boxes.xyxy.cpu().numpy()
+                class_ids = results[0].boxes.cls.int().cpu().tolist()
+                
+                # Resize boxes to match the ROI mask scale
+                scale_x, scale_y = w/small_w, h/small_h
+                
+                # Check each box to see if it intersects with ROI
+                for box, class_id in zip(boxes, class_ids):
+                    if class_id not in VEHICLE_CLASSES:
+                        continue
+                        
+                    # Get box center
+                    x1, y1, x2, y2 = map(int, box)
+                    center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
+                    
+                    # Check if center is in ROI
+                    if small_mask[center_y, center_x] > 0:
+                        vehicle_count += 1
+                
+            # Update detection state
+            self.last_detection_count = vehicle_count
+            
+            # If vehicles detected in ROI, switch to full processing mode
+            if vehicle_count > 0:
+                # Log only on state change
+                if self.processing_mode != "full":
+                    logger.info(f"[TRACKER] Detected {vehicle_count} vehicles in ROI, switching to full processing")
+                self.processing_mode = "full"
+                self.last_vehicle_detection_time = current_time
+                return True
+            else:
+                # If no vehicles detected and we're still in full mode, check cooldown
+                if self.processing_mode == "full" and time_since_last >= self.detection_cooldown:
+                    logger.info("[TRACKER] No vehicles in ROI, switching to lightweight processing")
+                    self.processing_mode = "lightweight"
+                return False
+                
+        except Exception as e:
+            logger.error(f"[TRACKER] Error in ROI check: {str(e)}")
+            # On error, default to processing to avoid missing detections
+            return True
+
     def detect_vehicles(self, frame):
         """Detect and track vehicles in frame."""
         if frame is None:
@@ -369,80 +498,99 @@ class VehicleTracker:
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
                 cv2.putText(vis_frame, "ROI", (roi_x, roi_y - 10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 1)  # Green text
-                logger.debug("[TRACKER] Drawing ROI polygon on visualization frame")
-            else:
-                logger.debug("[TRACKER] No ROI polygon defined")
             
-            # Ensure frame dimensions are consistent
-            current_dims = (frame.shape[1], frame.shape[0])
-            if hasattr(self, 'prev_frame_shape') and self.prev_frame_shape != current_dims:
-                logger.warning(f"[TRACKER] Frame size changed from {self.prev_frame_shape} to {current_dims}")
-            self.prev_frame_shape = current_dims
+            # Check if there are vehicles in ROI before running full detection
+            vehicles_in_roi = self._check_vehicle_in_roi(frame)
             
-            # Use the frame as is since it's already resized by the camera class
-            detection_frame = frame
+            # Display processing status on frame
+            status_text = f"Processing: {'ACTIVE' if vehicles_in_roi else 'IDLE'}"
+            status_color = (0, 0, 255) if vehicles_in_roi else (120, 120, 120)
+            cv2.putText(vis_frame, status_text, (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
+            cv2.putText(vis_frame, status_text, (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 1)
             
-            # Run detection
-            logger.debug("[TRACKER] Running YOLO detection and tracking")
-            results = self.model.track(
-                detection_frame,
-                persist=True,
-                classes=list(VEHICLE_CLASSES.keys()),
-                conf=0.3,
-                iou=0.45,
-                verbose=False
-            )
-            
-            # Process detections if we have any
-            if len(results) > 0 and hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
-                try:
-                    boxes = results[0].boxes.xyxy.cpu().numpy()
-                    track_ids = results[0].boxes.id.int().cpu().tolist()
-                    class_ids = results[0].boxes.cls.int().cpu().tolist()
-                    
-                    logger.debug(f"[TRACKER] Detected {len(track_ids)} vehicles: {dict(zip(track_ids, [VEHICLE_CLASSES.get(c, 'unknown') for c in class_ids]))}")
-                    
-                    # Process each detected vehicle
-                    vehicles_in_roi = 0
-                    vehicles_processed_for_plates = 0
-                    
-                    for box, track_id, class_id in zip(boxes, track_ids, class_ids):
-                        if class_id not in VEHICLE_CLASSES:
-                            continue
+            # Run full detection and tracking only if vehicles detected in ROI
+            if vehicles_in_roi:
+                # Ensure frame dimensions are consistent
+                current_dims = (frame.shape[1], frame.shape[0])
+                if hasattr(self, 'prev_frame_shape') and self.prev_frame_shape != current_dims:
+                    logger.warning(f"[TRACKER] Frame size changed from {self.prev_frame_shape} to {current_dims}")
+                self.prev_frame_shape = current_dims
+                
+                # Use the frame as is since it's already resized by the camera class
+                detection_frame = frame
+                
+                # Run detection with tracking (more CPU intensive)
+                logger.debug("[TRACKER] Running YOLO detection and tracking")
+                results = self.model.track(
+                    detection_frame,
+                    persist=True,
+                    classes=list(VEHICLE_CLASSES.keys()),
+                    conf=DETECTION_CONF,
+                    iou=DETECTION_IOU,
+                    verbose=False
+                )
+                
+                # Process detections if we have any
+                if len(results) > 0 and hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
+                    try:
+                        boxes = results[0].boxes.xyxy.cpu().numpy()
+                        track_ids = results[0].boxes.id.int().cpu().tolist()
+                        class_ids = results[0].boxes.cls.int().cpu().tolist()
+                        
+                        logger.debug(f"[TRACKER] Detected {len(track_ids)} vehicles: {dict(zip(track_ids, [VEHICLE_CLASSES.get(c, 'unknown') for c in class_ids]))}")
+                        
+                        # Process each detected vehicle
+                        vehicles_in_roi = 0
+                        vehicles_processed_for_plates = 0
+                        
+                        for box, track_id, class_id in zip(boxes, track_ids, class_ids):
+                            if class_id not in VEHICLE_CLASSES:
+                                continue
+                                
+                            # Check if vehicle is in ROI
+                            is_in_roi = self._is_vehicle_in_roi(box)
                             
-                        # Check if vehicle is in ROI
-                        is_in_roi = self._is_vehicle_in_roi(box)
+                            # Update vehicle state for tracking
+                            self._update_vehicle_state(track_id, frame, box)
+                            
+                            # Only process license plates for vehicles in ROI
+                            if is_in_roi:
+                                vehicles_in_roi += 1
+                                # Only try to detect license plate if not already detected for this vehicle
+                                if track_id not in self.detected_plates and track_id in self.frame_buffer:
+                                    # Process license plate if we have enough frames buffered
+                                    if len(self.frame_buffer[track_id]) >= 3:
+                                        vehicles_processed_for_plates += 1
+                                        # Get best frame from buffer
+                                        best_frame = self._select_best_frame(self.frame_buffer[track_id])
+                                        if best_frame is not None:
+                                            # Process the plate on the best quality frame
+                                            logger.info(f"[TRACKER] Processing license plate for vehicle {track_id} using best quality frame")
+                                            self._process_plate(best_frame, track_id)
+                                        else:
+                                            logger.warning(f"[TRACKER] Could not select best frame for vehicle {track_id}")
                         
-                        # Update vehicle state for tracking
-                        self._update_vehicle_state(track_id, frame, box)
+                        # Cleanup stale vehicles periodically
+                        self._cleanup_stale_vehicles()
                         
-                        # Only process license plates for vehicles in ROI
-                        if is_in_roi:
-                            vehicles_in_roi += 1
-                            # Only try to detect license plate if not already detected for this vehicle
-                            if track_id not in self.detected_plates and track_id in self.frame_buffer:
-                                # Process license plate if we have enough frames buffered
-                                if len(self.frame_buffer[track_id]) >= 3:
-                                    vehicles_processed_for_plates += 1
-                                    # Get best frame from buffer
-                                    best_frame = self._select_best_frame(self.frame_buffer[track_id])
-                                    if best_frame is not None:
-                                        # Process the plate on the best quality frame
-                                        logger.info(f"[TRACKER] Processing license plate for vehicle {track_id} using best quality frame")
-                                        self._process_plate(best_frame, track_id)
-                                    else:
-                                        logger.warning(f"[TRACKER] Could not select best frame for vehicle {track_id}")
-                    
-                    # Cleanup stale vehicles periodically
-                    self._cleanup_stale_vehicles()
-                    
-                    if vehicles_in_roi > 0:
-                        logger.debug(f"[TRACKER] {vehicles_in_roi} vehicles in ROI, {vehicles_processed_for_plates} processed for plates")
-                    
-                    # Draw all detections on the same frame
-                    vis_frame = self.visualize_detection(vis_frame, boxes, track_ids, class_ids)
-                except Exception as e:
-                    logger.error(f"[TRACKER] Error processing detection boxes: {str(e)}")
+                        if vehicles_in_roi > 0:
+                            logger.debug(f"[TRACKER] {vehicles_in_roi} vehicles in ROI, {vehicles_processed_for_plates} processed for plates")
+                        
+                        # Draw all detections on the same frame
+                        vis_frame = self.visualize_detection(vis_frame, boxes, track_ids, class_ids)
+                    except Exception as e:
+                        logger.error(f"[TRACKER] Error processing detection boxes: {str(e)}")
+                
+                # Keep full processing mode active by updating the timestamp
+                self.last_vehicle_detection_time = time.time()
+            else:
+                # If no vehicles detected, add a message on the display frame
+                cv2.putText(vis_frame, "No vehicles in ROI - CPU idle", (10, 90), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
+                cv2.putText(vis_frame, "No vehicles in ROI - CPU idle", (10, 90), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 200), 1)  # Cyan text
             
             # Display the visualization frame in the Detections window
             cv2.imshow('Detections', vis_frame)

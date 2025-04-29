@@ -16,6 +16,15 @@ echo -e "==================================${NC}"
 echo -e "${YELLOW}Current camera settings:${NC}"
 cat .env | grep "CAMERA_URL" | grep -v "^#"
 
+# Display optimization settings
+echo -e "${YELLOW}Optimization settings:${NC}"
+cat .env | grep "ROI_DETECTION" | grep -v "^#" || echo "Using default optimization settings"
+echo -e "${CYAN}-----------------------------------${NC}"
+echo -e "ROI-based vehicle detection reduces CPU usage"
+echo -e "by only processing frames when vehicles are"
+echo -e "present in the region of interest."
+echo -e "${CYAN}-----------------------------------${NC}"
+
 # Activate virtual environment
 if [ -d ".venv" ]; then
     echo -e "${CYAN}Activating virtual environment...${NC}"
