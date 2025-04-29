@@ -20,7 +20,13 @@ print(f"Configuring ROI for camera: {camera_id}")
 if camera_id == "main":
     camera_env_var = "CAMERA_URL"
 else:
-    camera_env_var = f"CAMERA_{camera_id.upper()}_URL"
+    # Check if camera_id starts with "camera_" and extract the number
+    if camera_id.startswith("camera_"):
+        camera_number = camera_id.split("_")[1]
+        camera_env_var = f"CAMERA_URL_{camera_number}"
+    else:
+        # Fallback to the original format
+        camera_env_var = f"CAMERA_{camera_id.upper()}_URL"
 
 # Get video source from environment variables or use default
 CAMERA_URL = os.getenv(camera_env_var, "0")  # Default to local webcam
