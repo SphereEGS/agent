@@ -6,6 +6,7 @@ from ultralytics import YOLO
 import shutil
 from PIL import Image, ImageDraw, ImageFont
 from paddleocr import PaddleOCR
+import threading
 
 from .config import (
     ARABIC_MAPPING,
@@ -15,7 +16,7 @@ from .config import (
 )
 
 # Use a lower resolution for license plate detection to speed up inference
-PLATE_DETECTION_SIZE = 2048
+PLATE_DETECTION_SIZE = 1024
 
 def preprocess_image(image):
     """
@@ -41,8 +42,22 @@ class PlateProcessor:
     """
     Processes vehicle images to detect and recognize license plates.
     """
-    def __init__(self):
-        logger.info("Initializing license plate recognition system...")
+    _model_lock = threading.Lock()
+    _instances = {}
+    
+    @classmethod
+    def get_instance(cls, camera_id="default"):
+        """
+        Factory method to get or create a camera-specific instance
+        """
+        with cls._model_lock:
+            if camera_id not in cls._instances:
+                cls._instances[camera_id] = cls(camera_id)
+            return cls._instances[camera_id]
+    
+    def __init__(self, camera_id="default"):
+        self.camera_id = camera_id
+        logger.info(f"Initializing license plate recognition system for camera {camera_id}...")
         os.makedirs("models", exist_ok=True)
         os.makedirs("output/plates", exist_ok=True)
         try:
@@ -55,40 +70,47 @@ class PlateProcessor:
                 shutil.copy2(source_model, LPR_MODEL_PATH)
                 logger.info("LPR model downloaded successfully")
             
-            # Keep YOLO for plate detection
+            # Create a dedicated model instance for this camera
             self.lpr_model = YOLO(LPR_MODEL_PATH)
-            logger.info("YOLO plate detection model loaded successfully")
+            logger.info(f"YOLO plate detection model loaded successfully for camera {camera_id}")
             
             # Initialize PaddleOCR for Arabic text recognition
-            logger.info("Initializing PaddleOCR for text recognition...")
+            logger.info(f"Initializing PaddleOCR for text recognition for camera {camera_id}...")
             self.ocr = PaddleOCR(use_angle_cls=True, lang='ar', use_gpu=True)
-            logger.info("PaddleOCR initialized successfully")
+            logger.info(f"PaddleOCR initialized successfully for camera {camera_id}")
             
             self.font_path = FONT_PATH
+            self.processing = False
             
         except Exception as e:
-            logger.error(f"Error initializing license plate system: {str(e)}")
+            logger.error(f"Error initializing license plate system for camera {camera_id}: {str(e)}")
             raise
 
     def find_best_plate_in_image(self, image):
         if image is None:
-            logger.warning("Empty image provided to find_best_plate_in_image")
+            logger.warning(f"Camera {self.camera_id}: Empty image provided to find_best_plate_in_image")
             return None
             
         try:
             # Preprocess the image before detection
             preprocessed = preprocess_image(image)
             
+            # Set processing flag to prevent concurrent use of the same model instance
+            self.processing = True
+            
             results = self.lpr_model.predict(
                 preprocessed, 
                 conf=0.25,
                 iou=0.5,
                 verbose=False,
-                #imgsz=PLATE_DETECTION_SIZE
+                imgsz=PLATE_DETECTION_SIZE  # Uncommented to use consistent image size
             )
             
+            # Reset processing flag
+            self.processing = False
+            
             if not results or len(results[0].boxes) == 0:
-                logger.info("No license plate detected in the image")
+                logger.info(f"Camera {self.camera_id}: No license plate detected in the image")
                 return None
 
             plate_boxes = []
@@ -105,35 +127,36 @@ class PlateProcessor:
                     plate_scores.append(float(conf))
 
             if not plate_boxes:
-                logger.info("No license plates found in the detections")
+                logger.info(f"Camera {self.camera_id}: No license plates found in the detections")
                 return None
 
             plate_boxes = np.array(plate_boxes)
             plate_scores = np.array(plate_scores)
             best_idx = np.argmax(plate_scores)
-            if plate_scores[best_idx] < 0.6:
-                logger.info(f"Best plate detection has low confidence: {plate_scores[best_idx]:.2f}")
+            if plate_scores[best_idx] < 0.5:  # Lower threshold slightly for better recall
+                logger.info(f"Camera {self.camera_id}: Best plate detection has low confidence: {plate_scores[best_idx]:.2f}")
                 return None
 
             h, w = preprocessed.shape[:2]
             x1, y1, x2, y2 = plate_boxes[best_idx]
-            pad_x = (x2 - x1) * 0.1
-            pad_y = (y2 - y1) * 0.1
+            pad_x = (x2 - x1) * 0.15  # Increased padding to capture more context
+            pad_y = (y2 - y1) * 0.15
             x1 = max(0, int(x1 - pad_x))
             y1 = max(0, int(y1 - pad_y))
             x2 = min(w, int(x2 + pad_x))
             y2 = min(h, int(y2 + pad_y))
             plate_img = preprocessed[y1:y2, x1:x2]
-            logger.info(f"License plate detected with confidence: {plate_scores[best_idx]:.2f}")
+            logger.info(f"Camera {self.camera_id}: License plate detected with confidence: {plate_scores[best_idx]:.2f}")
             return plate_img
 
         except Exception as e:
-            logger.error(f"Error detecting license plate: {str(e)}")
+            logger.error(f"Camera {self.camera_id}: Error detecting license plate: {str(e)}")
+            self.processing = False
             return None
 
     def recognize_plate(self, plate_image):
         if plate_image is None:
-            logger.warning("Empty plate image provided to recognize_plate")
+            logger.warning(f"Camera {self.camera_id}: Empty plate image provided to recognize_plate")
             return None
 
         try:
@@ -143,8 +166,8 @@ class PlateProcessor:
             # 2. Convert to RGB (PaddleOCR expects RGB)
             rgb_image = cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
 
-            # 3. Write to a temporary file
-            temp_path = "temp_plate.jpg"
+            # 3. Write to a temporary file with camera-specific name to avoid conflicts
+            temp_path = f"temp_plate_{self.camera_id}.jpg"
             cv2.imwrite(temp_path, enhanced)
 
             # 4. Run PaddleOCR
@@ -156,7 +179,7 @@ class PlateProcessor:
 
             # 6. Check for no result
             if not result or len(result) == 0 or not result[0]:
-                logger.info("No text detected on license plate by PaddleOCR")
+                logger.info(f"Camera {self.camera_id}: No text detected on license plate by PaddleOCR")
                 return None
 
             # 7. Collect _all_ high-confidence segments
@@ -169,7 +192,7 @@ class PlateProcessor:
                         text_segments.append(text)
 
             if not text_segments:
-                logger.info("No confident text detected on license plate")
+                logger.info(f"Camera {self.camera_id}: No confident text detected on license plate")
                 return None
 
             # 8. Concatenate into one raw string
@@ -182,14 +205,14 @@ class PlateProcessor:
             processed_text = ''.join(ARABIC_MAPPING.get(c, c) for c in cleaned)
 
             if processed_text:
-                logger.info(f"License plate recognized: {processed_text}")
+                logger.info(f"Camera {self.camera_id}: License plate recognized: {processed_text}")
                 return processed_text
             else:
-                logger.info("No valid characters found on license plate")
+                logger.info(f"Camera {self.camera_id}: No valid characters found on license plate")
                 return None
 
         except Exception as e:
-            logger.error(f"Error recognizing license plate with PaddleOCR: {e}")
+            logger.error(f"Camera {self.camera_id}: Error recognizing license plate with PaddleOCR: {e}")
             return None
 
 
@@ -204,7 +227,7 @@ class PlateProcessor:
             try:
                 font = ImageFont.truetype(self.font_path, font_size) if self.font_path else ImageFont.load_default()
             except Exception as e:
-                logger.warning(f"Error loading font: {str(e)}. Using default font.")
+                logger.warning(f"Camera {self.camera_id}: Error loading font: {str(e)}. Using default font.")
                 font = ImageFont.load_default()
             draw = ImageDraw.Draw(pil_image)
             # For Arabic license plates, we might want to display right-to-left
@@ -220,7 +243,7 @@ class PlateProcessor:
             draw.text((x, y), separated_text, font=font, fill=(255, 255, 255))
             return cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
         except Exception as e:
-            logger.warning(f"Could not add text to image: {str(e)}")
+            logger.warning(f"Camera {self.camera_id}: Could not add text to image: {str(e)}")
             return image
 
     def visualize_roi(self, image, roi_polygon=None):
@@ -257,10 +280,15 @@ class PlateProcessor:
             
             return result
         except Exception as e:
-            logger.warning(f"Error visualizing ROI: {str(e)}")
+            logger.warning(f"Camera {self.camera_id}: Error visualizing ROI: {str(e)}")
             return image
 
     def process_vehicle_image(self, vehicle_image, save_path=None):
+        # If this instance is already processing, avoid concurrent processing
+        if self.processing:
+            logger.warning(f"Camera {self.camera_id}: Skipping frame - model is busy processing")
+            return None, None
+            
         try:
             # Preprocess the entire vehicle image before processing the license plate
             preprocessed_vehicle = preprocess_image(vehicle_image)
@@ -268,21 +296,25 @@ class PlateProcessor:
             # First detect the license plate using YOLO (unchanged)
             plate_image = self.find_best_plate_in_image(preprocessed_vehicle)
             if plate_image is None:
-                logger.info("No license plate found in vehicle image")
+                logger.info(f"Camera {self.camera_id}: No license plate found in vehicle image")
                 return None, None
                 
             # Now use PaddleOCR to recognize the text
             plate_text = self.recognize_plate(plate_image)
             if plate_text is None:
-                logger.info("Could not recognize text on license plate")
+                logger.info(f"Camera {self.camera_id}: Could not recognize text on license plate")
                 return None, None
                 
             processed_image = self.add_text_to_image(plate_image, plate_text)
             if save_path and processed_image is not None:
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
-                cv2.imwrite(save_path, processed_image)
-                logger.info(f"Saved processed plate image to {save_path}")
+                # Include camera ID in saved image filename to avoid conflicts
+                base_name, ext = os.path.splitext(save_path)
+                camera_specific_path = f"{base_name}_{self.camera_id}{ext}"
+                cv2.imwrite(camera_specific_path, processed_image)
+                logger.info(f"Camera {self.camera_id}: Saved processed plate image to {camera_specific_path}")
             return plate_text, processed_image
         except Exception as e:
-            logger.error(f"Error processing vehicle image: {str(e)}")
+            logger.error(f"Camera {self.camera_id}: Error processing vehicle image: {str(e)}")
+            self.processing = False
             return None, None
