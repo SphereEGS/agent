@@ -159,38 +159,43 @@ class PlateProcessor:
                 logger.info("No text detected on license plate by PaddleOCR")
                 return None
 
-            # 7. Collect _all_ high-confidence segments
-            text_segments = []
+            # 7. Parse segments with their confidence and position
+            segments = []
             for line in result[0]:
-                # line = [box, (text, confidence), ...]
-                if len(line) >= 2 and isinstance(line[1], tuple):
-                    text, confidence = line[1]
-                    if confidence > 0.5:
-                        text_segments.append(text)
+                box = line[0]
+                # get the text and confidence
+                text, conf = line[1]
+                x_min = min(pt[0] for pt in box)
+                if text and text.strip():
+                    segments.append((text, conf, x_min))
 
-            if not text_segments:
-                logger.info("No confident text detected on license plate")
+            if not segments:
+                logger.info("No text segments at all")
                 return None
 
-            # 8. Concatenate into one raw string
-            raw_text = ''.join(text_segments)
+            # 8. Strong segments >0.5
+            kept = [(t, x) for (t, c, x) in segments if c > 0.5]
 
-            # 9. Remove non-alphanumerics
-            cleaned = ''.join(ch for ch in raw_text if ch.isalnum())
+            # 9. Relax threshold if total length is suspiciously small
+            if sum(len(t) for t, _ in kept) < 4:
+                kept += [(t, x) for (t, c, x) in segments if 0.3 < c <= 0.5]
 
-            # 10. Map Arabic‐Indic digits/letters to Latin if needed
-            processed_text = ''.join(ARABIC_MAPPING.get(c, c) for c in cleaned)
+            # 10. Sort left→right
+            kept.sort(key=lambda item: item[1])
 
-            if processed_text:
-                logger.info(f"License plate recognized: {processed_text}")
-                return processed_text
+            # 11. Concatenate
+            raw = ''.join(t for t, _ in kept)
+
+            # 12. Clean & map
+            cleaned = ''.join(ch for ch in raw if ch.isalnum())
+            processed = ''.join(ARABIC_MAPPING.get(c, c) for c in cleaned)
+
+            if processed:
+                logger.info(f"License plate recognized: {processed}")
+                return processed
             else:
                 logger.info("No valid characters found on license plate")
                 return None
-
-        except Exception as e:
-            logger.error(f"Error recognizing license plate with PaddleOCR: {e}")
-            return None
 
 
     def add_text_to_image(self, image, text):
