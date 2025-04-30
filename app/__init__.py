@@ -74,7 +74,7 @@ class SpherexAgent:
         self.camera_manager = CameraManager()
         
         # Tracking variables
-        self.last_detection_time = 0
+        self.last_detection_time = {}  # Change to a dictionary for per-camera cooldown
         self.detection_cooldown = 2  # 2 second cooldown between detections
         self.is_logged = False
         
@@ -96,6 +96,7 @@ class SpherexAgent:
             # Initialize processing flags for each camera
             for camera_id in self.camera_manager.get_camera_ids():
                 self.processing_flags[camera_id] = True
+                self.last_detection_time[camera_id] = 0  # Initialize cooldown timer for each camera
             return True
         else:
             logger.error("[AGENT] Failed to initialize any camera streams")
@@ -166,9 +167,9 @@ class SpherexAgent:
 
         # Skip frames based on PROCESS_EVERY setting but always display
         if frame_count % PROCESS_EVERY == 0:
-            # Check cooldown period
+            # Check cooldown period using per-camera timer
             current_time = time()
-            time_since_last = current_time - self.last_detection_time
+            time_since_last = current_time - self.last_detection_time.get(camera_id, 0)
 
             if time_since_last > self.detection_cooldown:
                 logger.debug(
@@ -233,7 +234,8 @@ class SpherexAgent:
                                     )
                                     # self.gate.open()
                                     self.log_gate_entry(plate_text, vis_frame, 1, camera_id)
-                                    self.last_detection_time = current_time
+                                    # Update the cooldown timer for just this camera
+                                    self.last_detection_time[camera_id] = current_time
                                 else:
                                     logger.info(
                                         f"[GATE] Not opening gate for unauthorized plate: {plate_text} detected by camera {camera_id}"
