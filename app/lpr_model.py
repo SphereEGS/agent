@@ -42,11 +42,10 @@ class PlateProcessor:
     Processes vehicle images to detect and recognize license plates.
     """
     def __init__(self):
-        logger.info("Initializing license plate recognition system...")
+        logger.info("Initializing license plate recognition model...")
         os.makedirs("models", exist_ok=True)
         os.makedirs("output/plates", exist_ok=True)
         try:
-            # Initialize YOLO model for plate detection
             if not os.path.exists(LPR_MODEL_PATH):
                 logger.info("Downloading LPR model for the first time...")
                 from huggingface_hub import snapshot_download
@@ -55,19 +54,17 @@ class PlateProcessor:
                 shutil.copy2(source_model, LPR_MODEL_PATH)
                 logger.info("LPR model downloaded successfully")
             
-            # Keep YOLO for plate detection
             self.lpr_model = YOLO(LPR_MODEL_PATH)
-            logger.info("YOLO plate detection model loaded successfully")
+            logger.info("LPR model loaded successfully")
+            self.font_path = FONT_PATH
             
-            # Initialize PaddleOCR for Arabic text recognition
-            logger.info("Initializing PaddleOCR for text recognition...")
+            # Initialize PaddleOCR for Arabic recognition
+            logger.info("Initializing PaddleOCR for Arabic text recognition...")
             self.ocr = PaddleOCR(use_angle_cls=True, lang='ar', use_gpu=True)
             logger.info("PaddleOCR initialized successfully")
             
-            self.font_path = FONT_PATH
-            
         except Exception as e:
-            logger.error(f"Error initializing license plate system: {str(e)}")
+            logger.error(f"Error initializing license plate model: {str(e)}")
             raise
 
     def find_best_plate_in_image(self, image):
@@ -137,54 +134,39 @@ class PlateProcessor:
             return None
             
         try:
-            # Further enhance the plate image for OCR
-            enhanced = cv2.detailEnhance(plate_image, sigma_s=10, sigma_r=0.15)
+            # Use PaddleOCR to recognize text on the plate
+            cv2.imwrite("temp_plate.jpg", plate_image)  # Save temporary image for PaddleOCR
+            result = self.ocr.ocr("temp_plate.jpg", cls=True)
             
-            # Convert to RGB for PaddleOCR
-            rgb_image = cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB)
-            
-            # Save the image to a temporary file (PaddleOCR works better with files)
-            temp_path = "temp_plate.jpg"
-            cv2.imwrite(temp_path, enhanced)
-            
-            # Run PaddleOCR
-            result = self.ocr.ocr(temp_path, cls=True)
-            
-            # Clean up temp file
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            
-            # Process the OCR results
+            if os.path.exists("temp_plate.jpg"):
+                os.remove("temp_plate.jpg")
+                
             if not result or len(result) == 0 or not result[0]:
                 logger.info("No text detected on license plate by PaddleOCR")
                 return None
                 
-            # Extract text from OCR results and filter/clean
-            detected_texts = []
+            # Extract recognized text from OCR results
+            # PaddleOCR returns a list of results, each with detection boxes and recognition results
+            text_results = []
             for line in result[0]:
                 if len(line) >= 2 and isinstance(line[1], tuple) and len(line[1]) >= 1:
                     text, confidence = line[1]
-                    if confidence > 0.5:  # Only consider high confidence results
-                        detected_texts.append((text, confidence))
+                    if confidence > 0.5:  # Filter by confidence
+                        text_results.append(text)
             
-            if not detected_texts:
-                logger.info("No confident text detected on license plate")
+            if not text_results:
+                logger.info("No high-confidence text found on license plate")
                 return None
                 
-            # Sort by confidence and take the highest confidence text
-            detected_texts.sort(key=lambda x: x[1], reverse=True)
-            raw_text = detected_texts[0][0]
+            # Join all detected text parts
+            license_text = ''.join(text_results)
             
-            # Clean and format the text (remove spaces, normalize digits)
-            cleaned_text = ''.join(ch for ch in raw_text if ch.isalnum())
+            # Apply any necessary post-processing for Arabic license plates
+            license_text = self.postprocess_arabic_text(license_text)
             
-            # Apply any needed mapping from ARABIC_MAPPING if still necessary
-            # This might not be needed if PaddleOCR directly outputs the correct characters
-            processed_text = ''.join([ARABIC_MAPPING.get(c, c) for c in cleaned_text])
-            
-            if processed_text:
-                logger.info(f"License plate recognized: {processed_text}")
-                return processed_text
+            if license_text:
+                logger.info(f"License plate recognized: {license_text}")
+                return license_text
             else:
                 logger.info("No valid characters found on license plate")
                 return None
@@ -192,6 +174,23 @@ class PlateProcessor:
         except Exception as e:
             logger.error(f"Error recognizing license plate with PaddleOCR: {str(e)}")
             return None
+            
+    def postprocess_arabic_text(self, text):
+        """
+        Apply post-processing to the recognized Arabic text.
+        This can include filtering non-license plate characters,
+        correcting common misrecognitions, etc.
+        """
+        if not text:
+            return None
+            
+        # Remove any unwanted characters
+        filtered_text = ''.join(c for c in text if c.isalnum() or c in '-_ ')
+        
+        # Apply any other Arabic-specific processing
+        # (can be expanded based on specific requirements)
+        
+        return filtered_text if filtered_text else None
 
     def add_text_to_image(self, image, text):
         if not text or image is None:
@@ -207,7 +206,6 @@ class PlateProcessor:
                 logger.warning(f"Error loading font: {str(e)}. Using default font.")
                 font = ImageFont.load_default()
             draw = ImageDraw.Draw(pil_image)
-            # For Arabic license plates, we might want to display right-to-left
             separated_text = "-".join(text)
             padding = 20
             text_bbox = draw.textbbox((0, 0), separated_text, font=font)
@@ -264,19 +262,14 @@ class PlateProcessor:
         try:
             # Preprocess the entire vehicle image before processing the license plate
             preprocessed_vehicle = preprocess_image(vehicle_image)
-            
-            # First detect the license plate using YOLO (unchanged)
             plate_image = self.find_best_plate_in_image(preprocessed_vehicle)
             if plate_image is None:
                 logger.info("No license plate found in vehicle image")
                 return None, None
-                
-            # Now use PaddleOCR to recognize the text
             plate_text = self.recognize_plate(plate_image)
             if plate_text is None:
                 logger.info("Could not recognize text on license plate")
                 return None, None
-                
             processed_image = self.add_text_to_image(plate_image, plate_text)
             if save_path and processed_image is not None:
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
