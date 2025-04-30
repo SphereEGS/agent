@@ -8,6 +8,9 @@ from PIL import Image, ImageFont, ImageDraw
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from functools import partial
+import threading
+import queue
+from typing import Dict, Tuple, Optional, List, Callable, Any
 
 from .config import (
     ARABIC_MAPPING,
@@ -55,7 +58,7 @@ def _find_plate_in_image(model_path, image):
         )
         
         if not results or len(results[0].boxes) == 0:
-            return None, None
+            return None, None, None
 
         plate_boxes = []
         plate_scores = []
@@ -71,13 +74,13 @@ def _find_plate_in_image(model_path, image):
                 plate_scores.append(float(conf))
 
         if not plate_boxes:
-            return None, None
+            return None, None, None
 
         plate_boxes = np.array(plate_boxes)
         plate_scores = np.array(plate_scores)
         best_idx = np.argmax(plate_scores)
         if plate_scores[best_idx] < 0.6:
-            return None, None
+            return None, None, None
 
         h, w = preprocessed.shape[:2]
         x1, y1, x2, y2 = plate_boxes[best_idx]
@@ -89,9 +92,10 @@ def _find_plate_in_image(model_path, image):
         y2 = min(h, int(y2 + pad_y))
         plate_img = preprocessed[y1:y2, x1:x2]
         
-        return plate_img, plate_scores[best_idx]
+        return plate_img, plate_scores[best_idx], preprocessed
     except Exception as e:
-        return None, None
+        logger.error(f"Error in _find_plate_in_image: {str(e)}")
+        return None, None, None
 
 def _recognize_plate(model_path, plate_image):
     try:
@@ -124,6 +128,7 @@ def _recognize_plate(model_path, plate_image):
         
         return license_text if license_text else None
     except Exception as e:
+        logger.error(f"Error in _recognize_plate: {str(e)}")
         return None
 
 class PlateProcessor:
@@ -154,25 +159,142 @@ class PlateProcessor:
             logger.info("LPR model loaded successfully")
             self.font_path = FONT_PATH
             
-            # Initialize the process pool executor
-            self.process_executor = ProcessPoolExecutor(max_workers=self.max_workers)
-            # Initialize a thread pool for lighter tasks
+            # Initialize thread pool for lighter tasks
             self.thread_executor = ThreadPoolExecutor(max_workers=self.max_workers*2)
             
-            logger.info(f"Initialized process pool with {self.max_workers} workers")
+            # Initialize the process pool executor
+            self.process_executor = ProcessPoolExecutor(max_workers=self.max_workers)
+            
+            # Initialize a task queue for non-blocking operation
+            self.task_queue = queue.Queue()
+            self.results = {}
+            self.results_lock = threading.Lock()
+            self.next_task_id = 0
+            self.task_id_lock = threading.Lock()
+            
+            # Start worker thread to process tasks
+            self.stop_event = threading.Event()
+            self.worker_thread = threading.Thread(target=self._process_queue, daemon=True)
+            self.worker_thread.start()
+            
+            logger.info(f"Initialized plate processor with {self.max_workers} workers")
             
         except Exception as e:
             logger.error(f"Error initializing license plate model: {str(e)}")
             raise
 
     def __del__(self):
-        # Clean up executors
+        # Clean up resources
+        self.shutdown()
+
+    def shutdown(self):
+        """Properly shutdown all resources"""
+        if hasattr(self, 'stop_event'):
+            self.stop_event.set()
+            
+        if hasattr(self, 'worker_thread') and self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=1.0)
+            
         if hasattr(self, 'process_executor'):
             self.process_executor.shutdown(wait=False)
+            
         if hasattr(self, 'thread_executor'):
             self.thread_executor.shutdown(wait=False)
+            
+        if hasattr(self, 'task_queue'):
+            # Clear queue
+            while not self.task_queue.empty():
+                try:
+                    self.task_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+    def _get_next_task_id(self):
+        """Generate a unique task ID"""
+        with self.task_id_lock:
+            task_id = self.next_task_id
+            self.next_task_id += 1
+        return task_id
+
+    def _process_queue(self):
+        """Background thread that processes the task queue"""
+        while not self.stop_event.is_set():
+            try:
+                # Get task with timeout to allow checking stop_event periodically
+                try:
+                    task_id, image, save_path, callback = self.task_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                
+                try:
+                    # Process the image
+                    plate_text, processed_image = self._process_image_worker(image, save_path)
+                    
+                    # Store or callback with result
+                    if callback:
+                        try:
+                            callback(plate_text, processed_image)
+                        except Exception as cb_error:
+                            logger.error(f"Error in callback for task {task_id}: {str(cb_error)}")
+                    else:
+                        with self.results_lock:
+                            self.results[task_id] = (plate_text, processed_image)
+                            
+                except Exception as e:
+                    logger.error(f"Error processing task {task_id}: {str(e)}")
+                    # Store error result
+                    if callback:
+                        try:
+                            callback(None, None)
+                        except Exception:
+                            pass
+                    else:
+                        with self.results_lock:
+                            self.results[task_id] = (None, None)
+                
+                # Mark task as done
+                self.task_queue.task_done()
+                
+            except Exception as e:
+                logger.error(f"Error in processing queue: {str(e)}")
+                # Small sleep to prevent tight loop in case of recurring errors
+                time.sleep(0.1)
+    
+    def _process_image_worker(self, image, save_path=None):
+        """Worker function that processes images in the background thread"""
+        try:
+            # Need to ensure image is not None
+            if image is None:
+                logger.warning("Empty image provided to process_image_worker")
+                return None, None
+            
+            # Use synchronous processing but in background thread
+            plate_image, _, _ = _find_plate_in_image(LPR_MODEL_PATH, image)
+            if plate_image is None:
+                return None, None
+                
+            plate_text = _recognize_plate(LPR_MODEL_PATH, plate_image)
+            if plate_text is None:
+                return None, None
+                
+            processed_image = self.add_text_to_image(plate_image, plate_text)
+            
+            # Save the image if requested
+            if save_path and processed_image is not None:
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                cv2.imwrite(save_path, processed_image)
+                
+            return plate_text, processed_image
+            
+        except Exception as e:
+            logger.error(f"Error in process_image_worker: {str(e)}")
+            return None, None
 
     def find_best_plate_in_image(self, image):
+        """
+        Synchronous method to find the best license plate in an image.
+        Maintains backwards compatibility with existing code.
+        """
         if image is None:
             logger.warning("Empty image provided to find_best_plate_in_image")
             return None
@@ -234,6 +356,10 @@ class PlateProcessor:
             return None
 
     def recognize_plate(self, plate_image):
+        """
+        Synchronous method to recognize text on a license plate.
+        Maintains backwards compatibility with existing code.
+        """
         if plate_image is None:
             logger.warning("Empty plate image provided to recognize_plate")
             return None
@@ -277,6 +403,7 @@ class PlateProcessor:
             return None
 
     def add_text_to_image(self, image, text):
+        """Add recognized license plate text to the image"""
         if not text or image is None:
             return image
         try:
@@ -343,6 +470,10 @@ class PlateProcessor:
             return image
 
     def process_vehicle_image(self, vehicle_image, save_path=None):
+        """
+        Synchronous method for processing a vehicle image and extracting the license plate.
+        Maintains backwards compatibility with existing code.
+        """
         try:
             # Preprocess the entire vehicle image before processing the license plate
             preprocessed_vehicle = preprocess_image(vehicle_image)
@@ -363,52 +494,53 @@ class PlateProcessor:
         except Exception as e:
             logger.error(f"Error processing vehicle image: {str(e)}")
             return None, None
-    
-    async def process_vehicle_image_async(self, vehicle_image, save_path=None):
+
+    def submit_image(self, vehicle_image, save_path=None, callback=None):
         """
-        Asynchronous version of the process_vehicle_image method that uses multiprocessing.
+        Submit an image for non-blocking, asynchronous processing.
+        
+        Args:
+            vehicle_image: The vehicle image to process
+            save_path: Optional path to save the processed plate image
+            callback: Optional callback function(plate_text, processed_image) to call when processing completes
+            
+        Returns:
+            task_id: A unique ID for this task, can be used to get results later if no callback provided
         """
-        try:
-            # Need to ensure vehicle_image is not None
-            if vehicle_image is None:
-                logger.warning("Empty image provided to process_vehicle_image_async")
-                return None, None
-                
-            # Preprocess the image in the current thread
-            preprocessed_vehicle = preprocess_image(vehicle_image)
+        if vehicle_image is None:
+            logger.warning("Empty image provided to submit_image")
+            if callback:
+                callback(None, None)
+                return None
+            return None
             
-            # Find the plate using a separate process
-            plate_future = self.process_executor.submit(_find_plate_in_image, LPR_MODEL_PATH, preprocessed_vehicle)
-            plate_image, confidence = plate_future.result()
+        task_id = self._get_next_task_id()
+        self.task_queue.put((task_id, vehicle_image, save_path, callback))
+        return task_id
+        
+    def get_result(self, task_id, timeout=None):
+        """
+        Get the result of a previously submitted image processing task.
+        
+        Args:
+            task_id: The task ID returned from submit_image
+            timeout: Maximum time to wait for the result (None = wait forever)
             
-            if plate_image is None:
-                logger.info("No license plate found in vehicle image")
-                return None, None
-                
-            # Recognize the plate text using a separate process
-            text_future = self.process_executor.submit(_recognize_plate, LPR_MODEL_PATH, plate_image)
-            plate_text = text_future.result()
-            
-            if plate_text is None:
-                logger.info("Could not recognize text on license plate")
-                return None, None
-                
-            # Add text to image in a thread (less CPU intensive)
-            processed_image_future = self.thread_executor.submit(self.add_text_to_image, plate_image, plate_text)
-            processed_image = processed_image_future.result()
-            
-            # Save the image if requested
-            if save_path and processed_image is not None:
-                # Use a thread for image saving (I/O operation)
-                save_future = self.thread_executor.submit(
-                    lambda: (os.makedirs(os.path.dirname(save_path), exist_ok=True),
-                             cv2.imwrite(save_path, processed_image))
-                )
-                save_future.result()
-                logger.info(f"Saved processed plate image to {save_path}")
-                
-            return plate_text, processed_image
-            
-        except Exception as e:
-            logger.error(f"Error in async processing of vehicle image: {str(e)}")
+        Returns:
+            (plate_text, processed_image) or None if timeout or task not found
+        """
+        if task_id is None:
             return None, None
+            
+        end_time = time.time() + timeout if timeout else None
+        
+        while end_time is None or time.time() < end_time:
+            with self.results_lock:
+                if task_id in self.results:
+                    result = self.results.pop(task_id)
+                    return result
+            
+            # Small sleep to prevent tight loop
+            time.sleep(0.01)
+            
+        return None, None
