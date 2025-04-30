@@ -196,7 +196,9 @@ class PlateProcessor:
             else:
                 logger.info("No valid characters found on license plate")
                 return None
-
+        except Exception as e:
+            logger.error(f"Error recognizing license plate with PaddleOCR: {str(e)}")
+            return None
 
     def add_text_to_image(self, image, text):
         if not text or image is None:
