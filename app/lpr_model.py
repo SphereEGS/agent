@@ -4,7 +4,10 @@ import os
 import time
 from ultralytics import YOLO
 import shutil
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageFont, ImageDraw
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from functools import partial
 
 from .config import (
     ARABIC_MAPPING,
@@ -36,14 +39,107 @@ def preprocess_image(image):
     sharpened = cv2.addWeighted(equ_bgr, 1.5, blurred, -0.5, 0)
     return sharpened
 
+# Helper functions that will be called by ProcessPoolExecutor
+def _find_plate_in_image(model_path, image):
+    try:
+        model = YOLO(model_path)
+        # Preprocess the image before detection
+        preprocessed = preprocess_image(image)
+        
+        results = model.predict(
+            preprocessed, 
+            conf=0.25,
+            iou=0.5,
+            verbose=False,
+            imgsz=PLATE_DETECTION_SIZE
+        )
+        
+        if not results or len(results[0].boxes) == 0:
+            return None, None
+
+        plate_boxes = []
+        plate_scores = []
+        lpr_class_names = model.names
+        
+        for box, cls, conf in zip(
+            results[0].boxes.xyxy, 
+            results[0].boxes.cls, 
+            results[0].boxes.conf
+        ):
+            if lpr_class_names[int(cls)] == "License Plate":
+                plate_boxes.append(box.cpu().numpy())
+                plate_scores.append(float(conf))
+
+        if not plate_boxes:
+            return None, None
+
+        plate_boxes = np.array(plate_boxes)
+        plate_scores = np.array(plate_scores)
+        best_idx = np.argmax(plate_scores)
+        if plate_scores[best_idx] < 0.6:
+            return None, None
+
+        h, w = preprocessed.shape[:2]
+        x1, y1, x2, y2 = plate_boxes[best_idx]
+        pad_x = (x2 - x1) * 0.1
+        pad_y = (y2 - y1) * 0.1
+        x1 = max(0, int(x1 - pad_x))
+        y1 = max(0, int(y1 - pad_y))
+        x2 = min(w, int(x2 + pad_x))
+        y2 = min(h, int(y2 + pad_y))
+        plate_img = preprocessed[y1:y2, x1:x2]
+        
+        return plate_img, plate_scores[best_idx]
+    except Exception as e:
+        return None, None
+
+def _recognize_plate(model_path, plate_image):
+    try:
+        model = YOLO(model_path)
+        results = model.predict(
+            plate_image, 
+            conf=0.25,
+            iou=0.45,
+            imgsz=PLATE_DETECTION_SIZE,
+            verbose=False
+        )
+        
+        if not results or len(results[0].boxes) == 0:
+            return None
+
+        lpr_class_names = model.names
+        boxes_and_classes = [
+            (float(box[0]), float(box[2]), lpr_class_names[int(cls)], conf)
+            for box, cls, conf in zip(
+                results[0].boxes.xyxy,
+                results[0].boxes.cls,
+                results[0].boxes.conf,
+            )
+        ]
+        boxes_and_classes.sort(key=lambda b: b[0])
+        unmapped_chars = [
+            cls for _, _, cls, _ in boxes_and_classes if cls in ARABIC_MAPPING
+        ]
+        license_text = "".join([ARABIC_MAPPING.get(c, c) for c in unmapped_chars if c in ARABIC_MAPPING])
+        
+        return license_text if license_text else None
+    except Exception as e:
+        return None
+
 class PlateProcessor:
     """
     Processes vehicle images to detect and recognize license plates.
     """
-    def __init__(self):
+    def __init__(self, max_workers=None):
         logger.info("Initializing license plate recognition model...")
         os.makedirs("models", exist_ok=True)
         os.makedirs("output/plates", exist_ok=True)
+        
+        # Set default max_workers to number of CPUs
+        if max_workers is None:
+            max_workers = max(2, multiprocessing.cpu_count() - 1)
+        self.max_workers = max_workers
+        
         try:
             if not os.path.exists(LPR_MODEL_PATH):
                 logger.info("Downloading LPR model for the first time...")
@@ -53,13 +149,28 @@ class PlateProcessor:
                 shutil.copy2(source_model, LPR_MODEL_PATH)
                 logger.info("LPR model downloaded successfully")
             
+            # Initialize a local model for synchronous operations
             self.lpr_model = YOLO(LPR_MODEL_PATH)
             logger.info("LPR model loaded successfully")
             self.font_path = FONT_PATH
             
+            # Initialize the process pool executor
+            self.process_executor = ProcessPoolExecutor(max_workers=self.max_workers)
+            # Initialize a thread pool for lighter tasks
+            self.thread_executor = ThreadPoolExecutor(max_workers=self.max_workers*2)
+            
+            logger.info(f"Initialized process pool with {self.max_workers} workers")
+            
         except Exception as e:
             logger.error(f"Error initializing license plate model: {str(e)}")
             raise
+
+    def __del__(self):
+        # Clean up executors
+        if hasattr(self, 'process_executor'):
+            self.process_executor.shutdown(wait=False)
+        if hasattr(self, 'thread_executor'):
+            self.thread_executor.shutdown(wait=False)
 
     def find_best_plate_in_image(self, image):
         if image is None:
@@ -75,7 +186,7 @@ class PlateProcessor:
                 conf=0.25,
                 iou=0.5,
                 verbose=False,
-                #imgsz=PLATE_DETECTION_SIZE
+                imgsz=PLATE_DETECTION_SIZE
             )
             
             if not results or len(results[0].boxes) == 0:
@@ -132,7 +243,7 @@ class PlateProcessor:
                 plate_image, 
                 conf=0.25,
                 iou=0.45,
-                #imgs=PLATE_DETECTION_SIZE,
+                imgsz=PLATE_DETECTION_SIZE,
                 verbose=False
             )
             
@@ -251,4 +362,53 @@ class PlateProcessor:
             return plate_text, processed_image
         except Exception as e:
             logger.error(f"Error processing vehicle image: {str(e)}")
+            return None, None
+    
+    async def process_vehicle_image_async(self, vehicle_image, save_path=None):
+        """
+        Asynchronous version of the process_vehicle_image method that uses multiprocessing.
+        """
+        try:
+            # Need to ensure vehicle_image is not None
+            if vehicle_image is None:
+                logger.warning("Empty image provided to process_vehicle_image_async")
+                return None, None
+                
+            # Preprocess the image in the current thread
+            preprocessed_vehicle = preprocess_image(vehicle_image)
+            
+            # Find the plate using a separate process
+            plate_future = self.process_executor.submit(_find_plate_in_image, LPR_MODEL_PATH, preprocessed_vehicle)
+            plate_image, confidence = plate_future.result()
+            
+            if plate_image is None:
+                logger.info("No license plate found in vehicle image")
+                return None, None
+                
+            # Recognize the plate text using a separate process
+            text_future = self.process_executor.submit(_recognize_plate, LPR_MODEL_PATH, plate_image)
+            plate_text = text_future.result()
+            
+            if plate_text is None:
+                logger.info("Could not recognize text on license plate")
+                return None, None
+                
+            # Add text to image in a thread (less CPU intensive)
+            processed_image_future = self.thread_executor.submit(self.add_text_to_image, plate_image, plate_text)
+            processed_image = processed_image_future.result()
+            
+            # Save the image if requested
+            if save_path and processed_image is not None:
+                # Use a thread for image saving (I/O operation)
+                save_future = self.thread_executor.submit(
+                    lambda: (os.makedirs(os.path.dirname(save_path), exist_ok=True),
+                             cv2.imwrite(save_path, processed_image))
+                )
+                save_future.result()
+                logger.info(f"Saved processed plate image to {save_path}")
+                
+            return plate_text, processed_image
+            
+        except Exception as e:
+            logger.error(f"Error in async processing of vehicle image: {str(e)}")
             return None, None
