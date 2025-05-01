@@ -11,6 +11,7 @@ from functools import partial
 import threading
 import queue
 from typing import Dict, Tuple, Optional, List, Callable, Any
+from paddleocr import PaddleOCR
 
 from .config import (
     ARABIC_MAPPING,
@@ -158,6 +159,10 @@ class PlateProcessor:
             self.lpr_model = YOLO(LPR_MODEL_PATH)
             logger.info("LPR model loaded successfully")
             self.font_path = FONT_PATH
+            
+            # Initialize PaddleOCR
+            self.ocr = PaddleOCR(use_angle_cls=True, lang='ar')
+            logger.info("PaddleOCR model loaded successfully")
             
             # Initialize thread pool for lighter tasks
             self.thread_executor = ThreadPoolExecutor(max_workers=self.max_workers*2)
@@ -357,49 +362,92 @@ class PlateProcessor:
 
     def recognize_plate(self, plate_image):
         """
-        Synchronous method to recognize text on a license plate.
-        Maintains backwards compatibility with existing code.
+        Recognize and return a license plate string from an image crop,
+        inserting '-' for any characters below the high-confidence threshold.
+        
+        Workflow:
+          1. detailEnhance pre-processing
+          2. PaddleOCR text detection
+          3. Build a per-character list, marking low-confidence chars as '-'
+          4. Spatial (left→right) ordering
+          5. Arabic-Indic → Latin mapping + alphanumeric filtering
         """
         if plate_image is None:
             logger.warning("Empty plate image provided to recognize_plate")
             return None
-            
+
         try:
-            results = self.lpr_model.predict(
-                plate_image, 
-                conf=0.25,
-                iou=0.45,
-                imgsz=PLATE_DETECTION_SIZE,
-                verbose=False
-            )
-            
-            if not results or len(results[0].boxes) == 0:
-                logger.info("No characters detected on license plate")
+            # 1) Enhance the image
+            enhanced = cv2.detailEnhance(plate_image, sigma_s=10, sigma_r=0.15)
+
+            # 2) Write to disk and OCR
+            temp_path = "temp_plate.jpg"
+            cv2.imwrite(temp_path, enhanced)
+            # Use self.ocr which is initialized in __init__
+            result = self.ocr.ocr(temp_path, cls=True) 
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+
+            if not result or not result[0]:
+                logger.info("No text detected on license plate by PaddleOCR")
                 return None
 
-            lpr_class_names = self.lpr_model.names
-            boxes_and_classes = [
-                (float(box[0]), float(box[2]), lpr_class_names[int(cls)], conf)
-                for box, cls, conf in zip(
-                    results[0].boxes.xyxy,
-                    results[0].boxes.cls,
-                    results[0].boxes.conf,
-                )
-            ]
-            boxes_and_classes.sort(key=lambda b: b[0])
-            unmapped_chars = [
-                cls for _, _, cls, _ in boxes_and_classes if cls in ARABIC_MAPPING
-            ]
-            license_text = "".join([ARABIC_MAPPING.get(c, c) for c in unmapped_chars if c in ARABIC_MAPPING])
-            if license_text:
-                logger.info(f"License plate recognized: {license_text}")
-                return license_text
+            # 3) Gather every detected segment with its confidence & position
+            chars = []  # list of tuples (char_or_placeholder, x_min)
+            for line in result[0]:
+                if len(line) < 2 or not isinstance(line[1], tuple):
+                    continue
+                # Ensure line structure is correct before unpacking
+                if len(line) >= 2 and isinstance(line[0], list) and isinstance(line[1], tuple) and len(line[1]) == 2:
+                    box, (text, conf) = line[0], line[1]
+                    text = text.strip()
+                    if not text:
+                        continue
+
+                    # leftmost X of the box
+                    x_min = min(pt[0] for pt in box)
+
+                    # assign placeholder for each char if below high threshold
+                    for ch in text:
+                        # only consider alphanumeric candidates (others become placeholder)
+                        if ch.isalnum():
+                            if conf >= 0.5:
+                                chars.append((ch, x_min))
+                            elif conf >= 0.3:
+                                chars.append(('-', x_min))
+                            # else: skip entirely if below 0.3
+                        else:
+                            # non-alnum becomes placeholder if moderate confidence
+                            if 0.3 <= conf < 0.5:
+                                chars.append(('-', x_min))
+                else:
+                    logger.warning(f"Skipping malformed PaddleOCR line: {line}")
+
+
+            if not chars:
+                logger.info("No text segments at all after filtering")
+                return None
+
+            # 4) Sort left → right and concatenate
+            chars.sort(key=lambda tup: tup[1])
+            raw_with_placeholders = ''.join(ch for ch, _ in chars)
+
+            # 5) Final cleaning & mapping
+            #   - we allow alphanumerics and '-', drop anything else
+            cleaned = ''.join(c for c in raw_with_placeholders if c.isalnum() or c == '-')
+            # Make sure ARABIC_MAPPING is available
+            processed = ''.join(ARABIC_MAPPING.get(c, c) for c in cleaned) 
+
+            if processed:
+                logger.info(f"License plate recognized (with placeholders): {processed}")
+                return processed
             else:
-                logger.info("No valid characters found on license plate")
+                logger.info("No valid characters found on license plate after final cleaning")
                 return None
 
         except Exception as e:
-            logger.error(f"Error recognizing license plate: {str(e)}")
+            logger.error(f"Error recognizing license plate with PaddleOCR: {e}")
+            # Consider re-raising or specific error handling if needed
             return None
 
     def add_text_to_image(self, image, text):
