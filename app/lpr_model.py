@@ -22,6 +22,9 @@ from .config import (
 # Use a lower resolution for license plate detection to speed up inference
 PLATE_DETECTION_SIZE = 1024
 
+# Define output directory for debug images
+DEBUG_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "output", "plate_debug")
+
 def preprocess_image(image):
     """
     Preprocess the vehicle snapshot to improve license plate recognition.
@@ -98,7 +101,6 @@ def _find_plate_in_image(model_path, image):
         return None, None, None
 
 def _recognize_plate(model_path, plate_image):
-    # Returns: Optional[Tuple[str, List[Tuple[str, float, np.ndarray]]]]
     try:
         model = YOLO(model_path)
         results = model.predict(
@@ -113,37 +115,27 @@ def _recognize_plate(model_path, plate_image):
             return None, None
 
         lpr_class_names = model.names
-        # Store (x_min, x_max, class_name, confidence, box_xyxy)
-        boxes_details = [
-            (
-                float(box.xyxy[0][0]), 
-                float(box.xyxy[0][2]), 
-                lpr_class_names[int(cls)], 
-                float(conf),
-                box.xyxy.cpu().numpy().squeeze() # Get the actual box coordinates
-            )
+        boxes_and_classes = [
+            (float(box[0]), float(box[1]), float(box[2]), float(box[3]), lpr_class_names[int(cls)], conf)
             for box, cls, conf in zip(
-                results[0].boxes, # Iterate over boxes object directly
+                results[0].boxes.xyxy,
                 results[0].boxes.cls,
                 results[0].boxes.conf,
             )
         ]
         
-        # Sort by x_min coordinate
-        boxes_details.sort(key=lambda b: b[0])
+        # Sort characters by x-coordinate for proper reading order
+        boxes_and_classes.sort(key=lambda b: b[0])
         
-        # Extract mapped characters and their details (char, conf, box)
-        char_details = []
-        unmapped_chars = []
-        for _, _, cls, conf, box_coords in boxes_details:
-            if cls in ARABIC_MAPPING:
-                mapped_char = ARABIC_MAPPING[cls]
-                unmapped_chars.append(mapped_char)
-                char_details.append((mapped_char, conf, box_coords))
-
-        license_text = "".join(unmapped_chars)
+        # Get only valid detections
+        valid_detections = [
+            (x1, y1, x2, y2, cls, conf) for x1, y1, x2, y2, cls, conf in boxes_and_classes if cls in ARABIC_MAPPING
+        ]
         
-        return (license_text, char_details) if license_text else (None, None)
+        unmapped_chars = [cls for _, _, _, _, cls, _ in valid_detections if cls in ARABIC_MAPPING]
+        license_text = "".join([ARABIC_MAPPING.get(c, c) for c in unmapped_chars if c in ARABIC_MAPPING])
+        
+        return license_text if license_text else None, valid_detections if valid_detections else None
     except Exception as e:
         logger.error(f"Error in _recognize_plate: {str(e)}")
         return None, None
@@ -156,7 +148,7 @@ class PlateProcessor:
         logger.info("Initializing license plate recognition model...")
         os.makedirs("models", exist_ok=True)
         os.makedirs("output/plates", exist_ok=True)
-        os.makedirs("output/recognized_plates", exist_ok=True)
+        os.makedirs(DEBUG_OUTPUT_DIR, exist_ok=True)
         
         # Set default max_workers to number of CPUs
         if max_workers is None:
@@ -246,7 +238,7 @@ class PlateProcessor:
                 
                 try:
                     # Process the image
-                    plate_text, processed_image = self._process_image_worker(image, save_path)
+                    plate_text, processed_image, debug_image = self._process_image_worker(image, save_path)
                     
                     # Store or callback with result
                     if callback:
@@ -281,44 +273,120 @@ class PlateProcessor:
     def _process_image_worker(self, image, save_path=None):
         """Worker function that processes images in the background thread"""
         try:
+            # Need to ensure image is not None
             if image is None:
                 logger.warning("Empty image provided to process_image_worker")
-                return None, None
+                return None, None, None
             
-            plate_image, _, _ = _find_plate_in_image(LPR_MODEL_PATH, image)
+            # Use synchronous processing but in background thread
+            plate_image, plate_confidence, _ = _find_plate_in_image(LPR_MODEL_PATH, image)
             if plate_image is None:
-                return None, None
+                return None, None, None
                 
-            plate_text, char_details = _recognize_plate(LPR_MODEL_PATH, plate_image)
-            if plate_text is None or not char_details:
-                return None, None
+            plate_text, detections = _recognize_plate(LPR_MODEL_PATH, plate_image)
+            if plate_text is None:
+                return None, None, None
+            
+            # Create debug image with bounding boxes
+            debug_image = self.visualize_character_detections(plate_image.copy(), plate_text, detections, plate_confidence)
+            
+            # Save the debug image
+            timestamp = int(time.time())
+            debug_path = os.path.join(DEBUG_OUTPUT_DIR, f"plate_debug_{timestamp}_{plate_text}.jpg")
+            cv2.imwrite(debug_path, debug_image)
+            logger.info(f"Saved debug plate image to {debug_path}")
                 
-            # Create the standard processed image (plate + text overlay)
-            # Keep this for the return value consistency / potential callbacks
             processed_image = self.add_text_to_image(plate_image, plate_text)
-
-            # Create and save the detailed image with character boxes
-            try:
-                detailed_plate_image = self.draw_char_details_on_plate(plate_image.copy(), char_details)
-                filename = f"{int(time.time()*1000)}_{plate_text}.png"
-                detailed_save_path = os.path.join("output/recognized_plates", filename)
-                os.makedirs(os.path.dirname(detailed_save_path), exist_ok=True)
-                cv2.imwrite(detailed_save_path, detailed_plate_image)
-                logger.info(f"Saved detailed plate image to {detailed_save_path}")
-            except Exception as save_err:
-                logger.error(f"Error saving detailed plate image: {save_err}")
-
-            # NOTE: The original save_path logic for processed_image is removed
-            # as per the request to save the detailed image.
-            # if save_path and processed_image is not None:
-            #     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            #     cv2.imwrite(save_path, processed_image)
+            
+            # Save the image if requested
+            if save_path and processed_image is not None:
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                cv2.imwrite(save_path, processed_image)
                 
-            return plate_text, processed_image # Return original style processed image
+            return plate_text, processed_image, debug_image
             
         except Exception as e:
             logger.error(f"Error in process_image_worker: {str(e)}")
-            return None, None
+            return None, None, None
+
+    def visualize_character_detections(self, plate_image, plate_text, detections, plate_confidence=None):
+        """
+        Draw bounding boxes around detected characters with confidence scores.
+        
+        Args:
+            plate_image: The cropped license plate image
+            plate_text: The recognized license plate text
+            detections: List of (x1, y1, x2, y2, character_class, confidence)
+            plate_confidence: Overall plate detection confidence
+            
+        Returns:
+            Image with visualized detections
+        """
+        if plate_image is None or not detections:
+            return plate_image
+        
+        try:
+            # Draw bounding boxes for each detected character
+            img_h, img_w = plate_image.shape[:2]
+            
+            for i, (x1, y1, x2, y2, cls, conf) in enumerate(detections):
+                # Convert coordinates to integers
+                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                
+                # Draw bounding box
+                color = (0, 255, 0)  # Green
+                cv2.rectangle(plate_image, (x1, y1), (x2, y2), color, 2)
+                
+                # Draw character label with confidence
+                char = ARABIC_MAPPING.get(cls, cls)
+                label = f"{char} ({conf:.2f})"
+                
+                # Put text on a dark background for readability
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.5
+                thickness = 1
+                text_size = cv2.getTextSize(label, font, font_scale, thickness)[0]
+                
+                # Draw text background
+                cv2.rectangle(plate_image, 
+                              (x1, y1 - text_size[1] - 5), 
+                              (x1 + text_size[0], y1), 
+                              (0, 0, 0), 
+                              -1)
+                
+                # Draw text
+                cv2.putText(plate_image, 
+                            label, 
+                            (x1, y1 - 5), 
+                            font, 
+                            font_scale, 
+                            (255, 255, 255), 
+                            thickness)
+            
+            # Add overall plate information
+            header_text = f"Plate: {plate_text}"
+            if plate_confidence is not None:
+                header_text += f" (Plate Conf: {plate_confidence:.2f})"
+                
+            # Add title at top of image
+            cv2.rectangle(plate_image, 
+                          (0, 0), 
+                          (img_w, 30), 
+                          (0, 0, 0), 
+                          -1)
+            cv2.putText(plate_image, 
+                        header_text, 
+                        (10, 20), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 
+                        0.6, 
+                        (255, 255, 255), 
+                        2)
+            
+            return plate_image
+            
+        except Exception as e:
+            logger.warning(f"Error visualizing character detections: {str(e)}")
+            return plate_image
 
     def find_best_plate_in_image(self, image):
         """
@@ -379,21 +447,20 @@ class PlateProcessor:
             y2 = min(h, int(y2 + pad_y))
             plate_img = preprocessed[y1:y2, x1:x2]
             logger.info(f"License plate detected with confidence: {plate_scores[best_idx]:.2f}")
-            return plate_img
+            return plate_img, plate_scores[best_idx]
 
         except Exception as e:
             logger.error(f"Error detecting license plate: {str(e)}")
-            return None
+            return None, None
 
     def recognize_plate(self, plate_image):
         """
         Synchronous method to recognize text on a license plate.
         Maintains backwards compatibility with existing code.
-        Returns: Optional[Tuple[str, List[Tuple[str, float, np.ndarray]]]]
         """
         if plate_image is None:
             logger.warning("Empty plate image provided to recognize_plate")
-            return None, None
+            return None
             
         try:
             results = self.lpr_model.predict(
@@ -406,42 +473,38 @@ class PlateProcessor:
             
             if not results or len(results[0].boxes) == 0:
                 logger.info("No characters detected on license plate")
-                return None, None
+                return None
 
             lpr_class_names = self.lpr_model.names
-            # Store (x_min, x_max, class_name, confidence, box_xyxy)
-            boxes_details = [
-                (
-                    float(box.xyxy[0][0]), 
-                    float(box.xyxy[0][2]), 
-                    lpr_class_names[int(cls)], 
-                    float(conf),
-                    box.xyxy.cpu().numpy().squeeze() # Get the actual box coordinates
-                )
+            boxes_and_classes = [
+                (float(box[0]), float(box[1]), float(box[2]), float(box[3]), lpr_class_names[int(cls)], conf)
                 for box, cls, conf in zip(
-                    results[0].boxes,
+                    results[0].boxes.xyxy,
                     results[0].boxes.cls,
                     results[0].boxes.conf,
                 )
             ]
             
-            # Sort by x_min
-            boxes_details.sort(key=lambda b: b[0])
+            # Sort characters by x-coordinate for proper reading order
+            boxes_and_classes.sort(key=lambda b: b[0])
             
-            # Extract mapped characters and details
-            char_details = []
-            unmapped_chars = []
-            for _, _, cls, conf, box_coords in boxes_details:
-                 if cls in ARABIC_MAPPING:
-                    mapped_char = ARABIC_MAPPING[cls]
-                    unmapped_chars.append(mapped_char)
-                    char_details.append((mapped_char, conf, box_coords))
-
-            license_text = "".join(unmapped_chars)
+            # Get only valid detections
+            valid_detections = [
+                (x1, y1, x2, y2, cls, conf) for x1, y1, x2, y2, cls, conf in boxes_and_classes if cls in ARABIC_MAPPING
+            ]
+            
+            unmapped_chars = [cls for _, _, _, _, cls, _ in valid_detections if cls in ARABIC_MAPPING]
+            license_text = "".join([ARABIC_MAPPING.get(c, c) for c in unmapped_chars if c in ARABIC_MAPPING])
             
             if license_text:
                 logger.info(f"License plate recognized: {license_text}")
-                return license_text, char_details
+                # Create debug visualization and save
+                debug_image = self.visualize_character_detections(plate_image.copy(), license_text, valid_detections)
+                timestamp = int(time.time())
+                debug_path = os.path.join(DEBUG_OUTPUT_DIR, f"plate_debug_{timestamp}_{license_text}.jpg")
+                cv2.imwrite(debug_path, debug_image)
+                logger.info(f"Saved debug plate image to {debug_path}")
+                return license_text, valid_detections
             else:
                 logger.info("No valid characters found on license plate")
                 return None, None
@@ -479,53 +542,6 @@ class PlateProcessor:
         except Exception as e:
             logger.warning(f"Could not add text to image: {str(e)}")
             return image
-
-    def draw_char_details_on_plate(
-        self, 
-        image: np.ndarray, 
-        char_details: List[Tuple[str, float, np.ndarray]]
-    ) -> np.ndarray:
-        """Draw bounding boxes, characters, and confidence scores on the plate image."""
-        if image is None or not char_details:
-            return image
-            
-        vis_image = image.copy()
-        h, w = vis_image.shape[:2]
-        
-        # Define font and colors
-        font_scale = 0.6
-        thickness = 1
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        box_color = (0, 255, 0)  # Green for boxes
-        text_color = (255, 255, 255) # White text
-        text_bg_color = (0, 0, 0) # Black background for text
-
-        for char, conf, box in char_details:
-            x1, y1, x2, y2 = map(int, box)
-            
-            # Draw bounding box
-            cv2.rectangle(vis_image, (x1, y1), (x2, y2), box_color, thickness + 1)
-            
-            # Prepare text
-            text = f"{char} ({conf:.2f})"
-            
-            # Get text size
-            (text_w, text_h), baseline = cv2.getTextSize(text, font, font_scale, thickness)
-            
-            # Put text background rectangle slightly above the box
-            bg_y1 = max(y1 - text_h - baseline - 2, 0) # Ensure it stays within image top
-            bg_x1 = x1
-            # Ensure background doesn't exceed image width
-            bg_x2 = min(x1 + text_w, w - 1)
-            bg_y2 = bg_y1 + text_h + baseline
-            
-            cv2.rectangle(vis_image, (bg_x1, bg_y1), (bg_x2, bg_y2), text_bg_color, -1) 
-            
-            # Put text
-            text_y = bg_y1 + text_h # Position text baseline correctly within background
-            cv2.putText(vis_image, text, (x1, text_y), font, font_scale, text_color, thickness, cv2.LINE_AA)
-
-        return vis_image
 
     def visualize_roi(self, image, roi_polygon=None):
         """
@@ -572,38 +588,47 @@ class PlateProcessor:
         try:
             # Preprocess the entire vehicle image before processing the license plate
             preprocessed_vehicle = preprocess_image(vehicle_image)
-            plate_image = self.find_best_plate_in_image(preprocessed_vehicle)
+            plate_result = self.find_best_plate_in_image(preprocessed_vehicle)
+            
+            if isinstance(plate_result, tuple) and len(plate_result) == 2:
+                plate_image, plate_confidence = plate_result
+            else:
+                plate_image, plate_confidence = plate_result, None
+                
             if plate_image is None:
                 logger.info("No license plate found in vehicle image")
                 return None, None
                 
-            plate_text, char_details = self.recognize_plate(plate_image)
-            if plate_text is None or not char_details:
+            recognition_result = self.recognize_plate(plate_image)
+            
+            if isinstance(recognition_result, tuple) and len(recognition_result) == 2:
+                plate_text, detections = recognition_result
+            else:
+                plate_text, detections = recognition_result, None
+                
+            if plate_text is None:
                 logger.info("Could not recognize text on license plate")
                 return None, None
-            
-            # Create the standard processed image (plate + text overlay) for return
-            processed_image = self.add_text_to_image(plate_image, plate_text)
-
-            # Create and save the detailed image with character boxes
-            try:
-                detailed_plate_image = self.draw_char_details_on_plate(plate_image.copy(), char_details)
-                filename = f"{int(time.time()*1000)}_{plate_text}.png"
-                detailed_save_path = os.path.join("output/recognized_plates", filename)
-                os.makedirs(os.path.dirname(detailed_save_path), exist_ok=True)
-                cv2.imwrite(detailed_save_path, detailed_plate_image)
-                logger.info(f"Saved detailed plate image to {detailed_save_path}")
-            except Exception as save_err:
-                logger.error(f"Error saving detailed plate image: {save_err}")
-
-            # NOTE: The original save_path logic is removed.
-            # if save_path and processed_image is not None:
-            #     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            #     cv2.imwrite(save_path, processed_image)
-            #     logger.info(f"Saved processed plate image to {save_path}")
                 
+            # Create debug visualization and save
+            if detections is not None:
+                debug_image = self.visualize_character_detections(
+                    plate_image.copy(), 
+                    plate_text, 
+                    detections, 
+                    plate_confidence
+                )
+                timestamp = int(time.time())
+                debug_path = os.path.join(DEBUG_OUTPUT_DIR, f"plate_debug_{timestamp}_{plate_text}.jpg")
+                cv2.imwrite(debug_path, debug_image)
+                logger.info(f"Saved debug plate image to {debug_path}")
+                
+            processed_image = self.add_text_to_image(plate_image, plate_text)
+            if save_path and processed_image is not None:
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                cv2.imwrite(save_path, processed_image)
+                logger.info(f"Saved processed plate image to {save_path}")
             return plate_text, processed_image
-            
         except Exception as e:
             logger.error(f"Error processing vehicle image: {str(e)}")
             return None, None
