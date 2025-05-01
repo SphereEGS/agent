@@ -12,6 +12,15 @@ import threading
 import queue
 from typing import Dict, Tuple, Optional, List, Callable, Any
 
+# Optional imports for proper Arabic text rendering
+# pip install arabic-reshaper python-bidi
+try:
+    import arabic_reshaper
+    from bidi.algorithm import get_display
+    ARABIC_TEXT_SUPPORT = True
+except ImportError:
+    ARABIC_TEXT_SUPPORT = False
+
 from .config import (
     ARABIC_MAPPING,
     FONT_PATH,
@@ -109,11 +118,11 @@ def _recognize_plate(model_path, plate_image):
         )
         
         if not results or len(results[0].boxes) == 0:
-            return None
+            return None, None, None
 
         lpr_class_names = model.names
         boxes_and_classes = [
-            (float(box[0]), float(box[2]), lpr_class_names[int(cls)], conf)
+            (float(box[0]), float(box[1]), float(box[2]), float(box[3]), lpr_class_names[int(cls)], float(conf))
             for box, cls, conf in zip(
                 results[0].boxes.xyxy,
                 results[0].boxes.cls,
@@ -122,14 +131,133 @@ def _recognize_plate(model_path, plate_image):
         ]
         boxes_and_classes.sort(key=lambda b: b[0])
         unmapped_chars = [
-            cls for _, _, cls, _ in boxes_and_classes if cls in ARABIC_MAPPING
+            cls for _, _, _, _, cls, _ in boxes_and_classes if cls in ARABIC_MAPPING
         ]
         license_text = "".join([ARABIC_MAPPING.get(c, c) for c in unmapped_chars if c in ARABIC_MAPPING])
         
-        return license_text if license_text else None
+        # Filter only valid characters for debug visualization
+        debug_boxes = [(x1, y1, x2, y2, char, conf) for x1, y1, x2, y2, char, conf in boxes_and_classes if char in ARABIC_MAPPING]
+        
+        return license_text if license_text else None, debug_boxes if license_text else None, plate_image
     except Exception as e:
         logger.error(f"Error in _recognize_plate: {str(e)}")
-        return None
+        return None, None, None
+
+def draw_debug_boxes(image, boxes_and_classes, full_text=None):
+    """
+    Draw bounding boxes and confidence scores for recognized characters
+    
+    Args:
+        image: The license plate image
+        boxes_and_classes: List of (x1, y1, x2, y2, char, conf) tuples
+        full_text: Full recognized license plate text
+        
+    Returns:
+        The image with bounding boxes and scores drawn
+    """
+    if image is None or not boxes_and_classes:
+        return image
+    
+    debug_img = image.copy()
+    
+    # Convert to PIL image for better text rendering (especially for Arabic)
+    image_rgb = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(image_rgb)
+    draw = ImageDraw.Draw(pil_image)
+    
+    # Try to load font, use default if failed
+    try:
+        small_font = ImageFont.truetype(FONT_PATH, 16)
+        large_font = ImageFont.truetype(FONT_PATH, 24)
+    except Exception as e:
+        logger.warning(f"Error loading font: {str(e)}. Using default font.")
+        small_font = ImageFont.load_default()
+        large_font = ImageFont.load_default()
+    
+    # First draw boxes on OpenCV image
+    for x1, y1, x2, y2, char, conf in boxes_and_classes:
+        # Convert to integers for drawing
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        
+        # Draw the bounding box
+        cv2.rectangle(debug_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
+    
+    # Convert back to PIL image after drawing boxes
+    image_rgb = cv2.cvtColor(debug_img, cv2.COLOR_BGR2RGB)
+    pil_image = Image.fromarray(image_rgb)
+    draw = ImageDraw.Draw(pil_image)
+    
+    # Draw text using PIL for each box
+    for x1, y1, x2, y2, char, conf in boxes_and_classes:
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        
+        # Get the mapped character
+        mapped_char = ARABIC_MAPPING.get(char, char)
+        
+        # Format for the confidence
+        label = f"{mapped_char}: {conf:.2f}"
+        
+        # Handle RTL for Arabic characters if support is available
+        if ARABIC_TEXT_SUPPORT and mapped_char in ARABIC_MAPPING.values():
+            reshaped_char = arabic_reshaper.reshape(mapped_char)
+            mapped_char = get_display(reshaped_char)
+            label = f"{mapped_char}: {conf:.2f}"
+        
+        # Calculate text bbox
+        text_bbox = draw.textbbox((0, 0), label, font=small_font)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
+        
+        # Draw a background for the text
+        draw.rectangle(
+            [x1, y1 - text_height - 5, x1 + text_width, y1], 
+            fill=(0, 0, 0)
+        )
+        
+        # Draw the text
+        draw.text(
+            (x1, y1 - text_height - 5),
+            label,
+            font=small_font,
+            fill=(255, 255, 255)
+        )
+    
+    # Add full text at the top if provided - properly handle Arabic text
+    if full_text:
+        h, w = debug_img.shape[:2]
+        
+        # For Arabic text, we might need to handle RTL (right-to-left)
+        # Process with Bidirectional algorithm if available
+        title = f"Recognized: {full_text}"
+        if ARABIC_TEXT_SUPPORT:
+            try:
+                reshaped_text = arabic_reshaper.reshape(title)
+                title = get_display(reshaped_text)
+            except Exception as e:
+                logger.warning(f"Error processing Arabic text: {str(e)}")
+        
+        # Calculate text size
+        text_bbox = draw.textbbox((0, 0), title, font=large_font)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
+        
+        # Draw background bar at the top
+        draw.rectangle(
+            [0, 0, w, text_height + 20],
+            fill=(0, 0, 0)
+        )
+        
+        # Draw text
+        draw.text(
+            (10, 10),
+            title,
+            font=large_font,
+            fill=(255, 255, 255)
+        )
+    
+    # Convert back to OpenCV format
+    result = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    return result
 
 class PlateProcessor:
     """
@@ -139,6 +267,12 @@ class PlateProcessor:
         logger.info("Initializing license plate recognition model...")
         os.makedirs("models", exist_ok=True)
         os.makedirs("output/plates", exist_ok=True)
+        os.makedirs("output/debug_plates", exist_ok=True)
+        
+        # Check if optional Arabic text libraries are installed
+        if not ARABIC_TEXT_SUPPORT:
+            logger.warning("Arabic text rendering libraries not found. For optimal display of Arabic license plates, "
+                          "please install them using: pip install arabic-reshaper python-bidi")
         
         # Set default max_workers to number of CPUs
         if max_workers is None:
@@ -273,7 +407,25 @@ class PlateProcessor:
             if plate_image is None:
                 return None, None
                 
-            plate_text = _recognize_plate(LPR_MODEL_PATH, plate_image)
+            plate_text, debug_boxes, original_plate_img = _recognize_plate(LPR_MODEL_PATH, plate_image)
+            
+            # Always save the debug visualization if we have a plate image
+            if original_plate_img is not None:
+                timestamp = int(time.time())
+                filename_base = f"{timestamp}_plate_async"
+                
+                # Save the original cropped plate for reference
+                orig_path = os.path.join("output", "debug_plates", f"{filename_base}_original.jpg")
+                os.makedirs(os.path.dirname(orig_path), exist_ok=True)
+                cv2.imwrite(orig_path, original_plate_img)
+                
+                # If we have debug boxes, save the visualization
+                if debug_boxes is not None:
+                    debug_img = draw_debug_boxes(original_plate_img, debug_boxes, plate_text)
+                    debug_path = os.path.join("output", "debug_plates", f"{filename_base}_{'unrecognized' if plate_text is None else plate_text}.jpg")
+                    cv2.imwrite(debug_path, debug_img)
+                    logger.info(f"Saved debug plate image to {debug_path}")
+            
             if plate_text is None:
                 return None, None
                 
@@ -375,11 +527,17 @@ class PlateProcessor:
             
             if not results or len(results[0].boxes) == 0:
                 logger.info("No characters detected on license plate")
+                # Still save the original plate image for debugging
+                timestamp = int(time.time())
+                orig_path = os.path.join("output", "debug_plates", f"{timestamp}_plate_sync_no_chars.jpg")
+                os.makedirs(os.path.dirname(orig_path), exist_ok=True)
+                cv2.imwrite(orig_path, plate_image)
+                logger.info(f"Saved unrecognized plate image to {orig_path}")
                 return None
 
             lpr_class_names = self.lpr_model.names
             boxes_and_classes = [
-                (float(box[0]), float(box[2]), lpr_class_names[int(cls)], conf)
+                (float(box[0]), float(box[1]), float(box[2]), float(box[3]), lpr_class_names[int(cls)], float(conf))
                 for box, cls, conf in zip(
                     results[0].boxes.xyxy,
                     results[0].boxes.cls,
@@ -388,9 +546,28 @@ class PlateProcessor:
             ]
             boxes_and_classes.sort(key=lambda b: b[0])
             unmapped_chars = [
-                cls for _, _, cls, _ in boxes_and_classes if cls in ARABIC_MAPPING
+                cls for _, _, _, _, cls, _ in boxes_and_classes if cls in ARABIC_MAPPING
             ]
             license_text = "".join([ARABIC_MAPPING.get(c, c) for c in unmapped_chars if c in ARABIC_MAPPING])
+            
+            # Always save debug visualization
+            timestamp = int(time.time())
+            filename_base = f"{timestamp}_plate_sync"
+            
+            # Save the original plate image for reference
+            orig_path = os.path.join("output", "debug_plates", f"{filename_base}_original.jpg")
+            os.makedirs(os.path.dirname(orig_path), exist_ok=True)
+            cv2.imwrite(orig_path, plate_image)
+            
+            # Filter valid characters for debug visualization
+            debug_boxes = [(x1, y1, x2, y2, char, conf) for x1, y1, x2, y2, char, conf in boxes_and_classes if char in ARABIC_MAPPING]
+            
+            # Create and save debug image with boxes
+            debug_img = draw_debug_boxes(plate_image, debug_boxes, license_text if license_text else "unrecognized")
+            debug_path = os.path.join("output", "debug_plates", f"{filename_base}_{license_text if license_text else 'unrecognized'}.jpg")
+            cv2.imwrite(debug_path, debug_img)
+            logger.info(f"Saved debug plate image to {debug_path}")
+            
             if license_text:
                 logger.info(f"License plate recognized: {license_text}")
                 return license_text
@@ -481,10 +658,31 @@ class PlateProcessor:
             if plate_image is None:
                 logger.info("No license plate found in vehicle image")
                 return None, None
-            plate_text = self.recognize_plate(plate_image)
+                
+            plate_text, debug_boxes, original_plate_img = _recognize_plate(LPR_MODEL_PATH, plate_image)
+            
+            # Always save the debug visualization if we have a plate image
+            if original_plate_img is not None:
+                timestamp = int(time.time())
+                filename_base = f"{timestamp}_plate"
+                
+                # Save the original cropped plate for reference
+                orig_path = os.path.join("output", "debug_plates", f"{filename_base}_original.jpg")
+                os.makedirs(os.path.dirname(orig_path), exist_ok=True)
+                cv2.imwrite(orig_path, original_plate_img)
+                logger.info(f"Saved original plate image to {orig_path}")
+                
+                # If we have debug boxes, save the visualization
+                if debug_boxes is not None:
+                    debug_img = draw_debug_boxes(original_plate_img, debug_boxes, plate_text)
+                    debug_path = os.path.join("output", "debug_plates", f"{filename_base}_{'unrecognized' if plate_text is None else plate_text}.jpg")
+                    cv2.imwrite(debug_path, debug_img)
+                    logger.info(f"Saved debug plate image to {debug_path}")
+            
             if plate_text is None:
                 logger.info("Could not recognize text on license plate")
                 return None, None
+                
             processed_image = self.add_text_to_image(plate_image, plate_text)
             if save_path and processed_image is not None:
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
