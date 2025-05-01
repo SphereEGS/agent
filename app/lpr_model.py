@@ -411,14 +411,14 @@ class PlateProcessor:
                     for ch in text:
                         # only consider alphanumeric candidates (others become placeholder)
                         if ch.isalnum():
-                            if conf >= 0.5:
+                            if conf >= 0.3:
                                 chars.append((ch, x_min))
-                            elif conf >= 0.3:
-                                chars.append(('-', x_min))
+                            #elif conf >= 0.3:
+                            #    chars.append(('-', x_min))
                             # else: skip entirely if below 0.3
                         else:
                             # non-alnum becomes placeholder if moderate confidence
-                            if 0.3 <= conf < 0.5:
+                            if 0.29 <= conf < 0.5:
                                 chars.append(('-', x_min))
                 else:
                     logger.warning(f"Skipping malformed PaddleOCR line: {line}")
