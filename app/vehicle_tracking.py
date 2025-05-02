@@ -73,7 +73,7 @@ class VehicleTracker:
             self.tracked_vehicles = {}
             self.plate_attempts = defaultdict(int)
             self.detected_plates = {}
-            self.max_attempts = 3
+            self.max_attempts = 8
             self.vehicle_tracking_timeout = 10
             self.last_vehicle_tracking_time = {}
             self.frame_buffer = {}
@@ -265,10 +265,10 @@ class VehicleTracker:
             if track_id in self.detected_plates:
                 plate_text = self.detected_plates[track_id]
                 # Draw plate text with thicker font and brighter color for better visibility of Arabic characters
-                cv2.putText(vis_frame, f"Plate: {plate_text}",
+                cv2.putText(vis_frame, f"Plate Detected",
                            (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX,
                            0.7, (0, 0, 0), 3)  # Black outline
-                cv2.putText(vis_frame, f"Plate: {plate_text}",
+                cv2.putText(vis_frame, f"Plate Detected",
                            (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX,
                            0.7, (0, 0, 255), 2)  # Red text
                 
@@ -590,7 +590,7 @@ class VehicleTracker:
                 
             # Step 2: Recognize characters on the license plate
             plate_text = self.plate_processor.recognize_plate(plate_img)
-            if plate_text and len(plate_text) >= 3:
+            if plate_text and len(plate_text) >= 6:
                 logger.info(f"[TRACKER] License plate recognized for vehicle {track_id}: {plate_text}")
                 self.detected_plates[track_id] = plate_text
                 return
