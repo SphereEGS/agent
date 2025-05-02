@@ -264,11 +264,11 @@ class VehicleTracker:
             # Draw plate if detected
             if track_id in self.detected_plates:
                 plate_text = self.detected_plates[track_id]
-                # Draw "Plate detected" instead of the actual text
-                cv2.putText(vis_frame, "Plate detected",
+                # Draw plate text with thicker font and brighter color for better visibility of Arabic characters
+                cv2.putText(vis_frame, f"Plate: {plate_text}",
                            (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX,
                            0.7, (0, 0, 0), 3)  # Black outline
-                cv2.putText(vis_frame, "Plate detected",
+                cv2.putText(vis_frame, f"Plate: {plate_text}",
                            (x1, y2+20), cv2.FONT_HERSHEY_SIMPLEX,
                            0.7, (0, 0, 255), 2)  # Red text
                 
@@ -276,6 +276,41 @@ class VehicleTracker:
                 self.last_recognized_plate = plate_text
                 # Debug log to ensure we're seeing plate detections
                 logger.debug(f"[TRACKER] Vehicle {track_id} has plate {plate_text}, updated last_recognized_plate")
+        
+        # Always draw the last plate info section, even if empty
+        h, w = vis_frame.shape[:2]
+        
+        # Draw smaller background rectangle for better aesthetics
+        cv2.rectangle(vis_frame, (10, h-70), (350, h-10), (0, 0, 0), -1)
+        cv2.rectangle(vis_frame, (10, h-70), (350, h-10), (255, 255, 255), 2)
+        
+        # Display last plate info or "No plate detected" message
+        if hasattr(self, 'last_recognized_plate') and self.last_recognized_plate is not None:
+            plate_text = self.last_recognized_plate
+            auth_status = "Authorized" if self.last_plate_authorized else "Not Authorized"
+            auth_color = (0, 255, 0) if self.last_plate_authorized else (0, 0, 255)  # Green or Red
+            
+            # Log that we're displaying the last recognized plate
+            logger.debug(f"[TRACKER] Displaying last plate: {plate_text}, status: {auth_status}")
+        else:
+            # Show default message when no plate is detected
+            plate_text = "No plate detected"
+            auth_status = "N/A"
+            auth_color = (128, 128, 128)  # Gray for N/A
+            
+        # Always display plate info with enhanced visibility but smaller font
+        # Add black outline first for better visibility
+        cv2.putText(vis_frame, f"Last Plate: {plate_text}", 
+                   (20, h-45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+        # Then add white text
+        cv2.putText(vis_frame, f"Last Plate: {plate_text}", 
+                   (20, h-45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+        
+        # Draw status with outline for better visibility
+        cv2.putText(vis_frame, f"Status: {auth_status}", 
+                   (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)  # Black outline
+        cv2.putText(vis_frame, f"Status: {auth_status}", 
+                   (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, auth_color, 1)  # Colored text
         
         return vis_frame
 
@@ -532,8 +567,32 @@ class VehicleTracker:
                 # Cleanup stale vehicles periodically
                 self._cleanup_stale_vehicles()
             else:
-                # When idle, don't display the plate info rectangle
-                pass
+                # Still show the last detected plate info when idle
+                h, w = vis_frame.shape[:2]
+                
+                # Draw smaller background rectangle for better aesthetics
+                cv2.rectangle(vis_frame, (10, h-70), (350, h-10), (0, 0, 0), -1)
+                cv2.rectangle(vis_frame, (10, h-70), (350, h-10), (255, 255, 255), 2)
+                
+                # Display last plate info or "No plate detected" message
+                if hasattr(self, 'last_recognized_plate') and self.last_recognized_plate is not None:
+                    plate_text = self.last_recognized_plate
+                    auth_status = "Authorized" if self.last_plate_authorized else "Not Authorized"
+                    auth_color = (0, 255, 0) if self.last_plate_authorized else (0, 0, 255)
+                else:
+                    plate_text = "No plate detected"
+                    auth_status = "N/A"
+                    auth_color = (128, 128, 128)
+                
+                # Display the plate info on idle frames too
+                cv2.putText(vis_frame, f"Last Plate: {plate_text}", 
+                           (20, h-45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+                cv2.putText(vis_frame, f"Last Plate: {plate_text}", 
+                           (20, h-45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
+                cv2.putText(vis_frame, f"Status: {auth_status}", 
+                           (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
+                cv2.putText(vis_frame, f"Status: {auth_status}", 
+                           (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, auth_color, 1)
             
             # If activity was just detected, show an indicator
             if activity_detected:
