@@ -567,32 +567,7 @@ class VehicleTracker:
                 # Cleanup stale vehicles periodically
                 self._cleanup_stale_vehicles()
             else:
-                # Still show the last detected plate info when idle
-                h, w = vis_frame.shape[:2]
-                
-                # Draw smaller background rectangle for better aesthetics
-                cv2.rectangle(vis_frame, (10, h-70), (350, h-10), (0, 0, 0), -1)
-                cv2.rectangle(vis_frame, (10, h-70), (350, h-10), (255, 255, 255), 2)
-                
-                # Display last plate info or "No plate detected" message
-                if hasattr(self, 'last_recognized_plate') and self.last_recognized_plate is not None:
-                    plate_text = self.last_recognized_plate
-                    auth_status = "Authorized" if self.last_plate_authorized else "Not Authorized"
-                    auth_color = (0, 255, 0) if self.last_plate_authorized else (0, 0, 255)
-                else:
-                    plate_text = "No plate detected"
-                    auth_status = "N/A"
-                    auth_color = (128, 128, 128)
-                
-                # Display the plate info on idle frames too
-                cv2.putText(vis_frame, f"Last Plate: {plate_text}", 
-                           (20, h-45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
-                cv2.putText(vis_frame, f"Last Plate: {plate_text}", 
-                           (20, h-45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-                cv2.putText(vis_frame, f"Status: {auth_status}", 
-                           (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-                cv2.putText(vis_frame, f"Status: {auth_status}", 
-                           (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, auth_color, 1)
+                logger.debug("[TRACKER] Not processing frame due to inactivity")
             
             # If activity was just detected, show an indicator
             if activity_detected:
