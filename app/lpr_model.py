@@ -464,6 +464,8 @@ class PlateProcessor:
             alpha = 0.15
             cv2.addWeighted(overlay, alpha, result, 1 - alpha, 0, result)
             
+            # No text is added to the image here
+            
             return result
         except Exception as e:
             logger.warning(f"Error visualizing ROI: {str(e)}")

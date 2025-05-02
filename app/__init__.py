@@ -103,14 +103,13 @@ class SpherexAgent:
 
     def log_gate_entry(self, plate, frame, is_authorized, camera_id="main"):
         try:
-            frame_with_text = self.processor.add_text_to_image(frame, plate)
+            # Don't add text to the image, just use the original frame
+            frame_with_roi = frame.copy()
             
-            # Try to get the ROI for this specific camera
+            # Just visualize the ROI without any text
             if camera_id in self.camera_manager.trackers:
                 tracker = self.camera_manager.trackers[camera_id]
-                frame_with_roi = self.processor.visualize_roi(frame_with_text, tracker.roi_polygon)
-            else:
-                frame_with_roi = frame_with_text
+                frame_with_roi = self.processor.visualize_roi(frame_with_roi, tracker.roi_polygon)
                 
             temp_file = f"gate_entry_{camera_id}.jpg"
             cv2.imwrite(temp_file, frame_with_roi)
