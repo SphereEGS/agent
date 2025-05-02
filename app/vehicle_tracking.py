@@ -73,7 +73,7 @@ class VehicleTracker:
             self.tracked_vehicles = {}
             self.plate_attempts = defaultdict(int)
             self.detected_plates = {}
-            self.max_attempts = 3
+            self.max_attempts = 6
             self.vehicle_tracking_timeout = 10
             self.last_vehicle_tracking_time = {}
             self.frame_buffer = {}
@@ -620,7 +620,7 @@ class VehicleTracker:
                 
             # Step 2: Recognize characters on the license plate
             plate_text = self.plate_processor.recognize_plate(plate_img)
-            if plate_text and len(plate_text) >= 3:
+            if plate_text and len(plate_text) >= 5:
                 logger.info(f"[TRACKER] License plate recognized for vehicle {track_id}: {plate_text}")
                 self.detected_plates[track_id] = plate_text
                 return
