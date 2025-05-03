@@ -71,15 +71,11 @@ class GateControl:
                         "password": self.password
                     }
                 },
-                verify=False
+                verify=False,
+                timeout=5
             )
-            if response.status_code != 200:
-                logger.error(f"Login failed with status {response.status_code}: {response.text}")
-                return
-            self.session_id = response.json().get("session_id")
-            if not self.session_id:
-                logger.error(f"Login response missing session_id: {response.text}")
-                return
+            response.raise_for_status()
+            self.session_id = response.headers.get("bs-session-id")
             logger.info(f"[OK] Session id updated: {self.session_id}")
         except Exception as e:
             logger.error(f"Failed to login to controller at {CONTROLLER_IP}: {str(e)}")
