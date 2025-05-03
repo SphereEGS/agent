@@ -103,7 +103,7 @@ class SpherexAgent:
 
     def log_gate_entry(self, plate, frame, is_authorized, camera_id="main"):
         try:
-            #frame_with_text = self.processor.add_text_to_image(frame, plate)
+            frame_with_text = self.processor.add_text_to_image(frame, plate)
             
             # Try to get the ROI for this specific camera
             if camera_id in self.camera_manager.trackers:
