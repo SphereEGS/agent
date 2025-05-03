@@ -61,7 +61,7 @@ class GateControl:
         try:
             response = requests.post(
                 f"{self.base_url}/login",
-                json={"username": self.username, "password": self.password},
+                json={"login_id": self.username, "password": self.password},
                 verify=False
             )
             if response.status_code != 200:
