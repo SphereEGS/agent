@@ -319,6 +319,27 @@ class VehicleTracker:
         current_time = time.time()
         self.last_vehicle_tracking_time[track_id] = current_time
         
+        # Check if vehicle is in ROI
+        is_in_roi = self._is_vehicle_in_roi(box)
+        
+        # Track ROI state transitions
+        if not hasattr(self, 'vehicle_roi_state'):
+            self.vehicle_roi_state = {}
+        
+        # If vehicle was previously in ROI but now it's not, clear its detection data
+        if track_id in self.vehicle_roi_state and self.vehicle_roi_state[track_id] == True and not is_in_roi:
+            logger.info(f"[TRACKER] Vehicle {track_id} exited ROI - clearing its detection data")
+            # Remove from detected plates when exiting ROI
+            if track_id in self.detected_plates:
+                del self.detected_plates[track_id]
+            # Reset plate attempts counter
+            self.plate_attempts[track_id] = 0
+            # Keep last recognized plate for display but mark vehicle as exited
+            # Could optionally add: self.frame_buffer[track_id] = []
+        
+        # Update vehicle's current ROI state
+        self.vehicle_roi_state[track_id] = is_in_roi
+        
         # Add frame to buffer
         if track_id not in self.frame_buffer:
             self.frame_buffer[track_id] = []
@@ -381,7 +402,12 @@ class VehicleTracker:
         for track_id in stale_ids:
             self.last_vehicle_tracking_time.pop(track_id, None)
             self.frame_buffer.pop(track_id, None)
-            logger.info(f"Vehicle {track_id} tracking timed out")
+            # Also remove from ROI tracking state and detected plates
+            if hasattr(self, 'vehicle_roi_state'):
+                self.vehicle_roi_state.pop(track_id, None)
+            self.detected_plates.pop(track_id, None)
+            self.plate_attempts.pop(track_id, None)
+            logger.info(f"Vehicle {track_id} tracking timed out - all data cleared")
 
     def _should_process_frame(self, frame):
         """Determine if this frame should be processed based on activity detection"""
