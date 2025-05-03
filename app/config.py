@@ -68,7 +68,7 @@ CAMERA_URLS = {}
 CAMERA_TYPES = {}
 
 # First add the main CAMERA_URL for backward compatibility
-CAMERA_URLS["main"] = CAMERA_URL
+# CAMERA_URLS["main"] = CAMERA_URL
 
 # Scan for numbered camera URLs (CAMERA_URL_1, CAMERA_URL_2, etc.)
 for i in range(1, 10):  # Support up to 9 cameras
