@@ -231,7 +231,7 @@ class SpherexAgent:
                                     logger.info(
                                         f"[GATE] Opening gate for authorized plate: {plate_text} detected by camera {camera_id}"
                                     )
-                                    # self.gate.open()
+                                    self.gate.open(camera_id)
                                     self.log_gate_entry(plate_text, vis_frame, 1, camera_id)
                                     self.last_detection_time = current_time
                                 else:

@@ -66,6 +66,7 @@ logger.info(f"Using camera source: {CAMERA_URL}")
 # Load multiple camera URLs from environment variables
 CAMERA_URLS = {}
 CAMERA_TYPES = {}
+GATE_IDS = {}
 
 # First add the main CAMERA_URL for backward compatibility
 # CAMERA_URLS["main"] = CAMERA_URL
@@ -75,19 +76,29 @@ for i in range(1, 10):  # Support up to 9 cameras
     env_key = f"CAMERA_URL_{i}"
     url = os.getenv(env_key)
     if url:
-        CAMERA_URLS[f"camera_{i}"] = url
-        logger.info(f"Found additional camera: {env_key} = {url}")
+        cam_id = f"camera_{i}"
+        CAMERA_URLS[cam_id] = url
+
         # Load camera type (Entry/Exit) if specified
         type_key = f"CAMERA_TYPE_{i}"
         cam_type = os.getenv(type_key, "Entry")
-        CAMERA_TYPES[f"camera_{i}"] = cam_type
-        logger.info(f"Camera {env_key} type: {cam_type}")
+        CAMERA_TYPES[cam_id] = cam_type
+
+        # Load gate id if specified
+        gate_id_key = f"GATE_ID_{i}"
+        gate_id = os.getenv(gate_id_key, "")
+        GATE_IDS[cam_id] = gate_id
+
+        logger.info(
+            f"[{i}] Type: {cam_type} | URL: {url} | Gate ID: {gate_id if gate_id else 'N/A'}"
+        )
 
 # If no numbered cameras found but main camera exists, use just the main camera
 if len(CAMERA_URLS) == 1:
     logger.info("Using single camera mode with main camera")
 else:
     logger.info(f"Using multi-camera mode with {len(CAMERA_URLS)} cameras")
+
 
 # Fallback configuration
 ALLOW_FALLBACK = (
