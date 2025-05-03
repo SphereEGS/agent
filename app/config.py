@@ -65,6 +65,7 @@ logger.info(f"Using camera source: {CAMERA_URL}")
 
 # Load multiple camera URLs from environment variables
 CAMERA_URLS = {}
+CAMERA_TYPES = {}
 
 # First add the main CAMERA_URL for backward compatibility
 CAMERA_URLS["main"] = CAMERA_URL
@@ -76,6 +77,11 @@ for i in range(1, 10):  # Support up to 9 cameras
     if url:
         CAMERA_URLS[f"camera_{i}"] = url
         logger.info(f"Found additional camera: {env_key} = {url}")
+        # Load camera type (Entry/Exit) if specified
+        type_key = f"CAMERA_TYPE_{i}"
+        cam_type = os.getenv(type_key, "Entry")
+        CAMERA_TYPES[f"camera_{i}"] = cam_type
+        logger.info(f"Camera {env_key} type: {cam_type}")
 
 # If no numbered cameras found but main camera exists, use just the main camera
 if len(CAMERA_URLS) == 1:

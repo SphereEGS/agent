@@ -7,7 +7,7 @@ import requests
 import threading
 
 from app.camera import InputStream
-from app.config import API_BASE_URL, CAMERA_URLS, CAMERA_URL, GATE, PROCESS_EVERY, logger
+from app.config import API_BASE_URL, CAMERA_URLS, CAMERA_TYPES, GATE, PROCESS_EVERY, logger
 from app.gate import GateControl
 from app.lpr_model import PlateProcessor
 from app.sync import SyncManager
@@ -120,7 +120,7 @@ class SpherexAgent:
                 "license_plate": plate,
                 "authorized": is_authorized,
                 "image": temp_file,
-                "access_type": "Entry",
+                "access_type": CAMERA_TYPES.get(camera_id, "Entry"),
                 "camera": camera_id
             }
 
