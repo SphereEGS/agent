@@ -9,6 +9,7 @@ from app.config import API_BASE_URL, UPDATE_INTERVAL, GATE, logger
 class SyncManager:
     def __init__(self):
         self.allowed_plates = set()
+        self.fuzzy_plates = set()  # Store off-by-one variants
         self.lock = Lock()
         self.start()
 
@@ -20,17 +21,38 @@ class SyncManager:
             self._update_allowed_plates()
             time.sleep(UPDATE_INTERVAL)
 
+    def _generate_fuzzy_variants(self, plate):
+        """
+        Generate variants of the plate with first or last character removed.
+        Only for plates of length >= 4 (to avoid too-short variants).
+        """
+        variants = set()
+        if len(plate) > 3:
+            # Remove first character
+            variants.add(plate[1:])
+            # Remove last character
+            variants.add(plate[:-1])
+        return variants
+
     def _update_allowed_plates(self):
         try:
             logger.info(f"Updating allowed plates for {GATE}")
             response = requests.get(
-                f"http://localhost:8001/api/method/spherex.api.license_plate.get_authorized_plates",
+                f"{API_BASE_URL}/api/method/spherex.api.license_plate.get_authorized_plates",
                 params={"gate": GATE},
                 verify=False
             )
             if response.status_code == 200:
                 with self.lock:
                     self.allowed_plates = set(response.json()["data"])
+                    # Precompute fuzzy variants
+                    fuzzy = set()
+                    for plate in self.allowed_plates:
+                        fuzzy.update(self._generate_fuzzy_variants(plate))
+                        # Also add reversed variants
+                        rev = plate[::-1]
+                        fuzzy.update(self._generate_fuzzy_variants(rev))
+                    self.fuzzy_plates = fuzzy
             else:
                 logger.error(
                     f"Error updating allowed plates: {response.status_code}"
@@ -41,41 +63,10 @@ class SyncManager:
 
     def is_authorized(self, plate):
         with self.lock:
-            # First check exact match
-            if plate in self.allowed_plates:
+            # Check exact and reversed
+            if plate in self.allowed_plates or plate[::-1] in self.allowed_plates:
                 return True
-                
-            # Then try fuzzy matching for each allowed plate
-            plate = plate.strip()  # Remove any whitespace
-            if not plate:  # Skip empty plates
-                return False
-                
-            for allowed_plate in self.allowed_plates:
-                allowed_plate = allowed_plate.strip()
-                if not allowed_plate:
-                    continue
-                    
-                # Skip if lengths are too different
-                if abs(len(plate) - len(allowed_plate)) > 1:
-                    continue
-                    
-                # Check if plates match except for first or last character
-                if len(plate) >= 6 and len(allowed_plate) >= 6:
-                    # Try matching without first character
-                    if plate[1:] == allowed_plate[1:] and len(plate) == len(allowed_plate):
-                        return True
-                        
-                    # Try matching without last character
-                    if plate[:-1] == allowed_plate[:-1] and len(plate) == len(allowed_plate):
-                        return True
-                        
-                    # If one plate is shorter, check if it's missing first or last char
-                    if len(plate) == len(allowed_plate) - 1:
-                        if plate == allowed_plate[1:] or plate == allowed_plate[:-1]:
-                            return True
-                            
-                    if len(allowed_plate) == len(plate) - 1:
-                        if allowed_plate == plate[1:] or allowed_plate == plate[:-1]:
-                            return True
-                            
+            # Check fuzzy variants (off-by-one at start/end)
+            if plate in self.fuzzy_plates or plate[::-1] in self.fuzzy_plates:
+                return True
             return False
