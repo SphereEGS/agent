@@ -16,7 +16,7 @@ from app.config import (
 )
 
 # Import the new embedded API
-from agent.embedded.Sphere-X-Extension.Programming.api.sphereX_ext import Gate as EmbeddedGate
+from agent.embedded.Sphere_X_Extension.Programming.api.sphereX_ext import Gate as EmbeddedGate
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
