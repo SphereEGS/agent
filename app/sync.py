@@ -24,7 +24,7 @@ class SyncManager:
         try:
             logger.info(f"Updating allowed plates for {GATE}")
             response = requests.get(
-                f"{API_BASE_URL}/api/method/spherex.api.license_plate.get_authorized_plates",
+                f"http://localhost:8001/api/method/spherex.api.license_plate.get_authorized_plates",
                 params={"gate": GATE},
                 verify=False
             )
@@ -41,7 +41,41 @@ class SyncManager:
 
     def is_authorized(self, plate):
         with self.lock:
-            return (
-                plate in self.allowed_plates
-                or plate[::-1] in self.allowed_plates
-            )
+            # First check exact match
+            if plate in self.allowed_plates:
+                return True
+                
+            # Then try fuzzy matching for each allowed plate
+            plate = plate.strip()  # Remove any whitespace
+            if not plate:  # Skip empty plates
+                return False
+                
+            for allowed_plate in self.allowed_plates:
+                allowed_plate = allowed_plate.strip()
+                if not allowed_plate:
+                    continue
+                    
+                # Skip if lengths are too different
+                if abs(len(plate) - len(allowed_plate)) > 1:
+                    continue
+                    
+                # Check if plates match except for first or last character
+                if len(plate) >= 6 and len(allowed_plate) >= 6:
+                    # Try matching without first character
+                    if plate[1:] == allowed_plate[1:] and len(plate) == len(allowed_plate):
+                        return True
+                        
+                    # Try matching without last character
+                    if plate[:-1] == allowed_plate[:-1] and len(plate) == len(allowed_plate):
+                        return True
+                        
+                    # If one plate is shorter, check if it's missing first or last char
+                    if len(plate) == len(allowed_plate) - 1:
+                        if plate == allowed_plate[1:] or plate == allowed_plate[:-1]:
+                            return True
+                            
+                    if len(allowed_plate) == len(plate) - 1:
+                        if allowed_plate == plate[1:] or allowed_plate == plate[:-1]:
+                            return True
+                            
+            return False
