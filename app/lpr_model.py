@@ -20,7 +20,7 @@ from .config import (
 )
 
 # Use a lower resolution for license plate detection to speed up inference
-PLATE_DETECTION_SIZE = 320
+PLATE_DETECTION_SIZE = 480
 
 def preprocess_image(image):
     """
