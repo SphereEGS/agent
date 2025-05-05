@@ -231,7 +231,14 @@ class SpherexAgent:
                                     logger.info(
                                         f"[GATE] Opening gate for authorized plate: {plate_text} detected by camera {camera_id}"
                                     )
-                                    self.gate.open(camera_id)
+                                    cam_type = CAMERA_TYPES.get(camera_id, "Entry")
+                                    if cam_type.lower() == "entry":
+                                        self.gate.open_entry()
+                                    elif cam_type.lower() == "exit":
+                                        self.gate.open_exit()
+                                    else:
+                                        logger.warning(f"Unknown camera type '{cam_type}' for camera {camera_id}, defaulting to entry barrier")
+                                        self.gate.open_entry()
                                     self.log_gate_entry(plate_text, vis_frame, 1, camera_id)
                                     self.last_detection_time = current_time
                                 else:

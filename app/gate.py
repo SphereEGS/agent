@@ -3,6 +3,7 @@ import urllib3
 import threading
 import time
 import socketio
+import os
 
 from app.config import (
     logger,
@@ -14,19 +15,72 @@ from app.config import (
     GATE_IDS,
 )
 
+# Import the new embedded API
+from agent.embedded.Sphere-X-Extension.Programming.api.sphereX_ext import Gate as EmbeddedGate
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 class GateControl:
-    def __init__(self):
-        self.base_url = f"https://{CONTROLLER_IP}/api"
-        self.username = CONTROLLER_USER
-        self.password = CONTROLLER_PASSWORD
-        self.session_id = None
+    def __init__(self, port=None):
+        # Allow port override via env/config, else auto-detect
+        if port is None:
+            port = os.getenv("GATE_SERIAL_PORT", None)
+        try:
+            self.gate = EmbeddedGate(port=port)
+            logger.info(f"Connected to embedded gate controller on port {self.gate.port}")
+        except Exception as e:
+            logger.error(f"Failed to initialize embedded gate controller: {e}")
+            self.gate = None
         self.lock = threading.Lock()
-        self.sio = None
-        # self._connect_socketio()
-        self.login()
+
+    def open_entry(self):
+        with self.lock:
+            if not self.gate:
+                logger.error("Embedded gate controller not initialized")
+                return
+            try:
+                logger.info("Opening entry barrier")
+                self.gate.entry_barrier.open()
+                logger.info("✅ Entry barrier opened")
+            except Exception as e:
+                logger.error(f"❌ Error opening entry barrier: {e}")
+
+    def close_entry(self):
+        with self.lock:
+            if not self.gate:
+                logger.error("Embedded gate controller not initialized")
+                return
+            try:
+                logger.info("Closing entry barrier")
+                self.gate.entry_barrier.close()
+                logger.info("✅ Entry barrier closed")
+            except Exception as e:
+                logger.error(f"❌ Error closing entry barrier: {e}")
+
+    def open_exit(self):
+        with self.lock:
+            if not self.gate:
+                logger.error("Embedded gate controller not initialized")
+                return
+            try:
+                logger.info("Opening exit barrier")
+                self.gate.exit_barrier.open()
+                logger.info("✅ Exit barrier opened")
+            except Exception as e:
+                logger.error(f"❌ Error opening exit barrier: {e}")
+
+    def close_exit(self):
+        with self.lock:
+            if not self.gate:
+                logger.error("Embedded gate controller not initialized")
+                return
+            try:
+                logger.info("Closing exit barrier")
+                self.gate.exit_barrier.close()
+                logger.info("✅ Exit barrier closed")
+            except Exception as e:
+                logger.error(f"❌ Error closing exit barrier: {e}")
 
     def _connect_socketio(self):
         """Connect to Socket.IO server and emit 'connect_agent' event."""
