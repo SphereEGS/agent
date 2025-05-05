@@ -5,3 +5,4 @@ ultralytics
 huggingface-hub
 python-dotenv
 python-socketio[client]
+pyserial

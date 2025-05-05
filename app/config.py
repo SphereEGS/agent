@@ -125,7 +125,7 @@ LPR_MODEL_PATH = os.getenv(
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "models/yolo11n.pt")
 
 # Update interval
-UPDATE_INTERVAL = int(os.getenv("UPDATE_INTERVAL", "600"))
+UPDATE_INTERVAL = int(os.getenv("UPDATE_INTERVAL", "60"))  # seconds
 
 # Backward compatibility
 CONTROLLER_IP = os.getenv("CONTROLLER_IP", "127.0.0.1")

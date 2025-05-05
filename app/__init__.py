@@ -234,8 +234,12 @@ class SpherexAgent:
                                     cam_type = CAMERA_TYPES.get(camera_id, "Entry")
                                     if cam_type.lower() == "entry":
                                         self.gate.open_entry()
+                                        sleep(5)  # Allow time for gate to open
+                                        self.gate.close_entry()
                                     elif cam_type.lower() == "exit":
                                         self.gate.open_exit()
+                                        sleep(5)
+                                        self.gate.close_exit()
                                     else:
                                         logger.warning(f"Unknown camera type '{cam_type}' for camera {camera_id}, defaulting to entry barrier")
                                         self.gate.open_entry()
