@@ -20,6 +20,35 @@ from .config import (
     logger,
 )
 
+# Set environment variables to help with CUDA detection on Jetson platforms
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["OPENCV_DNN_OPENCL_ALLOW_ALL_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+# For Jetson, try to enable TensorRT acceleration
+if os.path.exists('/proc/device-tree/model'):
+    try:
+        with open('/proc/device-tree/model', 'r') as f:
+            model = f.read()
+            if 'Jetson' in model:
+                # Jetson-specific environment variables
+                logger.info("[LPR] Setting Jetson-specific environment variables")
+                os.environ["TORCH_CUDA_ARCH_LIST"] = "5.3;6.2;7.2"  # For Jetson Nano/TX1/TX2/Xavier
+                os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:128"  # Help with memory fragmentation
+                
+                # Try importing Jetson-specific libraries and enabling optimizations
+                try:
+                    import torch
+                    # Disable benchmarking which can cause issues on Jetson
+                    torch.backends.cudnn.benchmark = False
+                    # Deterministic mode can be slower but more stable
+                    torch.backends.cudnn.deterministic = True
+                    logger.info("[LPR] Set PyTorch CUDA flags for Jetson")
+                except ImportError:
+                    pass
+    except Exception as e:
+        logger.warning(f"[LPR] Error reading Jetson model info: {str(e)}")
+
 # Use a lower resolution for license plate detection to speed up inference
 PLATE_DETECTION_SIZE = 480
 
@@ -92,13 +121,38 @@ def setup_gpu():
     """Setup and verify GPU availability for Jetson Nano and other CUDA devices"""
     try:
         # Check if CUDA is available for OpenCV
-        if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+        logger.info("[LPR] Checking for CUDA-enabled GPU...")
+        cuda_available = cv2.cuda.getCudaEnabledDeviceCount() > 0
+        
+        if cuda_available:
+            # Try to get CUDA device properties
+            try:
+                device_count = cv2.cuda.getCudaEnabledDeviceCount()
+                logger.info(f"[LPR] Found {device_count} CUDA device(s)")
+                for i in range(device_count):
+                    try:
+                        props = cv2.cuda.getDevice()
+                        logger.info(f"[LPR] CUDA device {i} selected: {props}")
+                    except Exception as e:
+                        logger.warning(f"[LPR] Could not get CUDA device {i} properties: {str(e)}")
+            except Exception as e:
+                logger.warning(f"[LPR] Error checking CUDA device properties: {str(e)}")
+                
             # Initialize CUDA context
             cv2.cuda.setDevice(0)
+            logger.info("[LPR] CUDA device set to 0")
+            
             # Create a small test operation to verify CUDA is working
-            test_mat = cv2.cuda_GpuMat((10, 10), cv2.CV_8UC3)
-            test_mat.upload(np.zeros((10, 10, 3), dtype=np.uint8))
-            test_mat.release()
+            try:
+                test_mat = cv2.cuda_GpuMat((10, 10), cv2.CV_8UC3)
+                test_mat.upload(np.zeros((10, 10, 3), dtype=np.uint8))
+                # Try a simple operation
+                cv2.cuda.cvtColor(test_mat, cv2.COLOR_BGR2GRAY)
+                test_mat.release()
+                logger.info("[LPR] Successfully verified CUDA operation")
+            except Exception as e:
+                logger.error(f"[LPR] CUDA test operation failed: {str(e)}")
+                return False
             
             # Check for Jetson-specific environment
             if os.path.exists('/proc/device-tree/model'):
@@ -106,8 +160,21 @@ def setup_gpu():
                     with open('/proc/device-tree/model', 'r') as f:
                         model = f.read()
                         if 'Jetson' in model:
-                            logger.info("[LPR] Detected Jetson Nano hardware")
+                            logger.info(f"[LPR] Detected Jetson hardware: {model.strip()}")
                             # Apply Jetson-specific optimizations
+                            try:
+                                # Try to import torch first to see if it's available
+                                import torch
+                                logger.info(f"[LPR] PyTorch version: {torch.__version__}, CUDA available: {torch.cuda.is_available()}")
+                                if torch.cuda.is_available():
+                                    logger.info(f"[LPR] PyTorch CUDA device count: {torch.cuda.device_count()}")
+                                    logger.info(f"[LPR] Current CUDA device: {torch.cuda.current_device()}")
+                                    logger.info(f"[LPR] CUDA device name: {torch.cuda.get_device_name(0)}")
+                            except ImportError:
+                                logger.info("[LPR] PyTorch not available or not imported")
+                            except Exception as e:
+                                logger.warning(f"[LPR] Error checking PyTorch CUDA: {str(e)}")
+                                
                             try:
                                 import jetson.utils
                                 logger.info("[LPR] Jetson utils package detected")
@@ -116,25 +183,63 @@ def setup_gpu():
                 except Exception as e:
                     logger.debug(f"[LPR] Error reading device model: {str(e)}")
             
+            # Try importing CUDA packages
+            try:
+                import pycuda.driver as cuda
+                logger.info("[LPR] PyCUDA available")
+                cuda.init()
+                logger.info(f"[LPR] PyCUDA device count: {cuda.Device.count()}")
+                for i in range(cuda.Device.count()):
+                    device = cuda.Device(i)
+                    logger.info(f"[LPR] PyCUDA device {i} name: {device.name()}")
+            except ImportError:
+                logger.info("[LPR] PyCUDA not available")
+            except Exception as e:
+                logger.warning(f"[LPR] Error initializing PyCUDA: {str(e)}")
+            
             logger.info("[LPR] GPU acceleration enabled for OpenCV")
             return True
         else:
-            logger.info("[LPR] No CUDA-capable GPU detected for OpenCV")
+            logger.warning("[LPR] No CUDA-capable GPU detected by OpenCV")
+            # Additional check using other libraries
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    logger.info("[LPR] PyTorch detects CUDA is available, but OpenCV doesn't")
+                    # Try to enable CUDA for OpenCV
+                    os.environ["OPENCV_DNN_OPENCL_ALLOW_ALL_DEVICES"] = "1"
+                    logger.info("[LPR] Enabled OpenCL for all devices")
+                    return True
+            except ImportError:
+                pass
+            except Exception as e:
+                logger.warning(f"[LPR] Error checking PyTorch CUDA: {str(e)}")
+            
             return False
     except Exception as e:
-        logger.warning(f"[LPR] Error setting up GPU, falling back to CPU: {str(e)}")
+        logger.error(f"[LPR] Error setting up GPU, falling back to CPU: {str(e)}")
         return False
 
 # Helper functions that will be called by ProcessPoolExecutor
 def _find_plate_in_image(model_path, image, use_gpu=False):
     try:
+        # Load model with explicit device parameter
+        device = 0 if use_gpu else 'cpu'
         model = YOLO(model_path)
+        
         # Set model to GPU if available
-        if use_gpu and hasattr(model, 'to'):
+        if use_gpu:
             try:
-                model.to(0)  # Use GPU 0
+                # First try string format
+                try:
+                    model.to('cuda:0')
+                except Exception:
+                    # Then try integer
+                    model.to(0)
+                logger.debug("[LPR] Plate detection model set to GPU")
             except Exception as e:
-                logger.debug(f"[LPR] Could not set model to GPU: {str(e)}")
+                logger.debug(f"[LPR] Could not set plate detection model to GPU: {str(e)}")
+                use_gpu = False
 
         # Preprocess the image before detection
         preprocessed = preprocess_image(image, use_gpu)
@@ -142,16 +247,25 @@ def _find_plate_in_image(model_path, image, use_gpu=False):
         # Use half precision for GPU inference
         half_precision = use_gpu
         
+        # Extra debugging for shape
+        logger.debug(f"[LPR] Input shape for detection: {preprocessed.shape}")
+        
+        # Run prediction with explicit device
         results = model.predict(
             preprocessed, 
             conf=0.25,
             iou=0.5,
             verbose=False,
             imgsz=PLATE_DETECTION_SIZE,
-            half=half_precision
+            half=half_precision,
+            device=device  # Explicit device parameter
         )
         
-        if not results or len(results[0].boxes) == 0:
+        # Extra logging to verify prediction ran
+        if results and len(results) > 0:
+            logger.debug(f"[LPR] Detection results received: {len(results[0].boxes)} boxes")
+        else:
+            logger.debug("[LPR] No detection results")
             return None, None, None
 
         plate_boxes = []
@@ -168,12 +282,14 @@ def _find_plate_in_image(model_path, image, use_gpu=False):
                 plate_scores.append(float(conf))
 
         if not plate_boxes:
+            logger.debug("[LPR] No license plates detected in boxes")
             return None, None, None
 
         plate_boxes = np.array(plate_boxes)
         plate_scores = np.array(plate_scores)
         best_idx = np.argmax(plate_scores)
         if plate_scores[best_idx] < 0.6:
+            logger.debug(f"[LPR] Best plate has low confidence: {plate_scores[best_idx]:.2f}")
             return None, None, None
 
         h, w = preprocessed.shape[:2]
@@ -194,12 +310,14 @@ def _find_plate_in_image(model_path, image, use_gpu=False):
                 plate_img = gpu_plate.download()
                 gpu_preprocessed.release()
                 gpu_plate.release()
+                logger.debug("[LPR] Plate ROI extracted using GPU")
             except Exception as e:
                 logger.debug(f"[LPR] GPU extraction failed, using CPU: {str(e)}")
                 plate_img = preprocessed[y1:y2, x1:x2]
         else:
             plate_img = preprocessed[y1:y2, x1:x2]
         
+        logger.debug(f"[LPR] Plate detected with confidence: {plate_scores[best_idx]:.2f}")
         return plate_img, plate_scores[best_idx], preprocessed
     except Exception as e:
         logger.error(f"Error in _find_plate_in_image: {str(e)}")
@@ -207,27 +325,43 @@ def _find_plate_in_image(model_path, image, use_gpu=False):
 
 def _recognize_plate(model_path, plate_image, use_gpu=False):
     try:
+        # Load model with explicit device parameter
+        device = 0 if use_gpu else 'cpu'
         model = YOLO(model_path)
+        
         # Set model to GPU if available
-        if use_gpu and hasattr(model, 'to'):
+        if use_gpu:
             try:
-                model.to(0)  # Use GPU 0
+                # First try string format
+                try:
+                    model.to('cuda:0')
+                except Exception:
+                    # Then try integer
+                    model.to(0)
+                logger.debug("[LPR] Character recognition model set to GPU")
             except Exception as e:
-                logger.debug(f"[LPR] Could not set model to GPU: {str(e)}")
+                logger.debug(f"[LPR] Could not set character recognition model to GPU: {str(e)}")
+                use_gpu = False
                 
         # Use half precision for GPU inference
         half_precision = use_gpu
         
+        # Extra debugging for shape
+        logger.debug(f"[LPR] Input shape for recognition: {plate_image.shape}")
+        
+        # Run prediction with explicit device
         results = model.predict(
             plate_image, 
             conf=0.25,
             iou=0.45,
             imgsz=PLATE_DETECTION_SIZE,
             verbose=False,
-            half=half_precision
+            half=half_precision,
+            device=device  # Explicit device parameter
         )
         
         if not results or len(results[0].boxes) == 0:
+            logger.debug("[LPR] No characters detected on license plate")
             return None
 
         lpr_class_names = model.names
@@ -245,7 +379,12 @@ def _recognize_plate(model_path, plate_image, use_gpu=False):
         ]
         license_text = "".join([ARABIC_MAPPING.get(c, c) for c in unmapped_chars if c in ARABIC_MAPPING])
         
-        return license_text if license_text else None
+        if license_text:
+            logger.debug(f"[LPR] Plate recognized: {license_text}")
+            return license_text
+        else:
+            logger.debug("[LPR] No valid characters found on license plate")
+            return None
     except Exception as e:
         logger.error(f"Error in _recognize_plate: {str(e)}")
         return None
@@ -272,6 +411,35 @@ class PlateProcessor:
         self.max_workers = max_workers
         
         try:
+            # Try to check CUDA support on PyTorch side which is used by YOLO
+            try:
+                import torch
+                self.torch_cuda_available = torch.cuda.is_available()
+                if self.torch_cuda_available:
+                    device_count = torch.cuda.device_count()
+                    if device_count > 0:
+                        device_name = torch.cuda.get_device_name(0)
+                        logger.info(f"[LPR] PyTorch detected CUDA device: {device_name}")
+                        
+                        # Explicitly set the PyTorch device
+                        torch.cuda.set_device(0)
+                        logger.info(f"[LPR] PyTorch CUDA device set to 0")
+                        
+                        # Force synchronization to make sure device is initialized
+                        torch.cuda.synchronize()
+                else:
+                    logger.warning("[LPR] PyTorch reports CUDA is NOT available")
+                    # If OpenCV detected CUDA but PyTorch didn't, something is wrong
+                    if self.gpu_available:
+                        logger.warning("[LPR] Mismatch: OpenCV sees CUDA but PyTorch doesn't")
+            except ImportError:
+                logger.info("[LPR] PyTorch not imported directly")
+                self.torch_cuda_available = False
+            except Exception as e:
+                logger.warning(f"[LPR] Error checking PyTorch CUDA: {str(e)}")
+                self.torch_cuda_available = False
+                
+            # Download model if needed
             if not os.path.exists(LPR_MODEL_PATH):
                 logger.info("Downloading LPR model for the first time...")
                 from huggingface_hub import snapshot_download
@@ -281,18 +449,44 @@ class PlateProcessor:
                 logger.info("LPR model downloaded successfully")
             
             # Initialize a local model for synchronous operations
+            # We need to specify the device explicitly
+            device_arg = None
+            if self.gpu_available:
+                device_arg = "cuda:0"  # Explicitly specify CUDA device 0
+                logger.info(f"[LPR] Setting YOLO device to {device_arg}")
+            else:
+                device_arg = "cpu"
+                logger.info("[LPR] Setting YOLO device to CPU")
+                
+            # Load the model with explicit device specification
             self.lpr_model = YOLO(LPR_MODEL_PATH)
+            logger.info(f"[LPR] YOLO model loaded, now setting device to {device_arg}")
             
-            # Set model to GPU if available
-            if self.gpu_available and hasattr(self.lpr_model, 'to'):
+            # Set model to GPU if available using the to() method
+            if self.gpu_available:
                 try:
-                    self.lpr_model.to(0)  # Use GPU 0
-                    logger.info("LPR model loaded on GPU")
+                    # First check the model's current device
+                    if hasattr(self.lpr_model, 'model') and hasattr(self.lpr_model.model, 'device'):
+                        logger.info(f"[LPR] Model's current device: {self.lpr_model.model.device}")
+                        
+                    # Try explicit device setting
+                    self.lpr_model.to(device_arg)
+                    logger.info(f"[LPR] Model moved to {device_arg}")
+                    
+                    # Check if it worked
+                    if hasattr(self.lpr_model, 'model') and hasattr(self.lpr_model.model, 'device'):
+                        logger.info(f"[LPR] Model's device after moving: {self.lpr_model.model.device}")
                 except Exception as e:
-                    logger.warning(f"Could not load LPR model on GPU: {str(e)}")
-                    self.gpu_available = False
+                    logger.error(f"[LPR] Could not move model to {device_arg}: {str(e)}")
+                    # Try integer device format as fallback
+                    try:
+                        self.lpr_model.to(0)  # Try just using device index
+                        logger.info("[LPR] Model moved to device 0")
+                    except Exception as e2:
+                        logger.error(f"[LPR] Failed to move model to GPU with second method: {str(e2)}")
+                        self.gpu_available = False
             
-            logger.info(f"LPR model loaded successfully on {'GPU' if self.gpu_available else 'CPU'}")
+            logger.info(f"[LPR] Model setup complete on {'GPU' if self.gpu_available else 'CPU'}")
             self.font_path = FONT_PATH
             
             # Initialize thread pool for lighter tasks
@@ -313,7 +507,7 @@ class PlateProcessor:
             self.worker_thread = threading.Thread(target=self._process_queue, daemon=True)
             self.worker_thread.start()
             
-            logger.info(f"Initialized plate processor with {self.max_workers} workers, GPU acceleration: {self.gpu_available}")
+            logger.info(f"[LPR] Initialized plate processor with {self.max_workers} workers, GPU acceleration: {self.gpu_available}")
             
         except Exception as e:
             logger.error(f"Error initializing license plate model: {str(e)}")
@@ -442,13 +636,33 @@ class PlateProcessor:
             # Use half precision for GPU inference
             half_precision = self.gpu_available
             
+            # Set explicit device
+            device = 0 if self.gpu_available else 'cpu'
+            logger.debug(f"[LPR] Running plate detection on device: {device}")
+            
+            # Make sure model is on the right device before prediction
+            if self.gpu_available:
+                try:
+                    # First try string format
+                    try:
+                        self.lpr_model.to('cuda:0')
+                    except Exception:
+                        # Then try integer
+                        self.lpr_model.to(0)
+                except Exception as e:
+                    logger.debug(f"[LPR] Failed to move model to GPU before detection: {str(e)}")
+            
+            # Get image shape for debugging
+            logger.debug(f"[LPR] Plate detection input shape: {preprocessed.shape}")
+            
             results = self.lpr_model.predict(
                 preprocessed, 
                 conf=0.25,
                 iou=0.5,
                 verbose=False,
                 imgsz=PLATE_DETECTION_SIZE,
-                half=half_precision
+                half=half_precision,
+                device=device  # Explicit device parameter
             )
             
             if not results or len(results[0].boxes) == 0:
@@ -523,13 +737,33 @@ class PlateProcessor:
             # Use half precision for GPU inference
             half_precision = self.gpu_available
             
+            # Set explicit device
+            device = 0 if self.gpu_available else 'cpu'
+            logger.debug(f"[LPR] Running plate recognition on device: {device}")
+            
+            # Make sure model is on the right device before prediction
+            if self.gpu_available:
+                try:
+                    # First try string format
+                    try:
+                        self.lpr_model.to('cuda:0')
+                    except Exception:
+                        # Then try integer
+                        self.lpr_model.to(0)
+                except Exception as e:
+                    logger.debug(f"[LPR] Failed to move model to GPU before recognition: {str(e)}")
+            
+            # Get image shape for debugging
+            logger.debug(f"[LPR] Plate recognition input shape: {plate_image.shape}")
+            
             results = self.lpr_model.predict(
                 plate_image, 
                 conf=0.25,
                 iou=0.45,
                 imgsz=PLATE_DETECTION_SIZE,
                 verbose=False,
-                half=half_precision
+                half=half_precision,
+                device=device  # Explicit device parameter
             )
             
             if not results or len(results[0].boxes) == 0:
