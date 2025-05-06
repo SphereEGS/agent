@@ -66,12 +66,11 @@ class InputStream:
                 # CUDA-based resizer
                 self.gpu_resizer = None
             else:
-                logger.warning(f"[CAMERA:{self.camera_id}] CUDA acceleration not available")
-                self.resize_buffer = None
+                logger.error(f"[CAMERA:{self.camera_id}] No CUDA acceleration available - GPU is required")
+                raise RuntimeError("GPU acceleration is required but no CUDA device was found")
         except Exception as e:
-            logger.warning(f"[CAMERA:{self.camera_id}] Error initializing CUDA: {str(e)}")
-            self.use_cuda = False
-            self.resize_buffer = None
+            logger.error(f"[CAMERA:{self.camera_id}] Error initializing CUDA: {str(e)}")
+            raise RuntimeError(f"Failed to initialize GPU acceleration: {str(e)}")
         
         # Error handling with fast recovery
         self.decode_errors = 0
@@ -106,69 +105,45 @@ class InputStream:
     def _connect_to_source(self):
         """Connect to the video source with optimized pipeline settings for Jetson Nano"""
         try:
-            # Clean the source string
-            source = self.camera_url.strip()
-            if source.startswith(('"', "'")):
-                source = source[1:-1]
-            if '#' in source:
-                source = source.split('#')[0].strip()
+            # Determine source from URL or ID
+            source = self.camera_url
             
+            # Close existing connection if any
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+                
             logger.info(f"[CAMERA:{self.camera_id}] Connecting to: {source}")
             
-            # Release previous capture if it exists
-            if self.cap is not None:
-                try:
-                    self.cap.release()
-                    time.sleep(0.2)  # Reduced release wait time
-                except Exception:
-                    pass
-                self.cap = None
-            
-            # Determine if this is an RTSP source
-            is_rtsp = source.startswith('rtsp://')
-            
-            if is_rtsp:
-                # JETSON OPTIMIZATION: Use specialized hardware-accelerated GStreamer pipeline
-                if self.use_hw_accel:
-                    # Hardware-accelerated pipeline for Jetson
-                    gst_pipeline = (
-                        f"rtspsrc location={source} latency=0 buffer-mode=auto ! "
-                        f"rtph264depay ! h264parse ! nvv4l2decoder ! "  # Nvidia hardware decoder
-                        f"nvvidconv ! video/x-raw, format=BGRx ! "       # Nvidia video converter
-                        f"videoconvert ! video/x-raw, format=BGR ! "     # Convert to BGR for OpenCV
-                        f"appsink max-buffers=1 drop=true sync=false"
-                    )
-                    
-                    logger.info(f"[CAMERA:{self.camera_id}] Using Jetson hardware-accelerated GStreamer pipeline")
-                    cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
-                else:
-                    # Regular optimized GStreamer pipeline
-                    gst_pipeline = (
-                        f"rtspsrc location={source} latency=0 buffer-mode=auto ! "
-                        f"rtph264depay ! h264parse ! avdec_h264 ! "
-                        f"videoconvert ! appsink max-buffers=1 drop=true sync=false"
-                    )
-                    
-                    logger.info(f"[CAMERA:{self.camera_id}] Using standard GStreamer pipeline")
-                    cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+            if isinstance(source, str) and (
+                source.startswith("rtsp://") or 
+                source.startswith("rtmp://") or
+                source.startswith("http://") or
+                source.startswith("https://")
+            ):
+                # RTSP or other streaming source
                 
-                # Fallback to FFMPEG if GStreamer fails
+                # JETSON OPTIMIZATION: Use specialized hardware-accelerated GStreamer pipeline
+                if not self.use_hw_accel:
+                    logger.error(f"[CAMERA:{self.camera_id}] Hardware acceleration is required")
+                    raise RuntimeError("Hardware acceleration is required for RTSP streams but is disabled")
+                    
+                # Hardware-accelerated pipeline for Jetson
+                gst_pipeline = (
+                    f"rtspsrc location={source} latency=0 buffer-mode=auto ! "
+                    f"rtph264depay ! h264parse ! nvv4l2decoder ! "  # Nvidia hardware decoder
+                    f"nvvidconv ! video/x-raw, format=BGRx ! "       # Nvidia video converter
+                    f"videoconvert ! video/x-raw, format=BGR ! "     # Convert to BGR for OpenCV
+                    f"appsink max-buffers=1 drop=true sync=false"
+                )
+                
+                logger.info(f"[CAMERA:{self.camera_id}] Using Jetson hardware-accelerated GStreamer pipeline")
+                cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+                
+                # If GStreamer fails, it's an error - we don't fall back to CPU
                 if not cap.isOpened():
-                    logger.warning(f"[CAMERA:{self.camera_id}] GStreamer failed, using FFMPEG with optimized settings")
-                    
-                    # Optimized FFMPEG settings for low latency
-                    ffmpeg_options = []
-                    ffmpeg_options.append("rtsp_transport;tcp")      # TCP is more reliable
-                    ffmpeg_options.append("stimeout;2000000")        # Reduced timeout
-                    ffmpeg_options.append("fflags;nobuffer+discardcorrupt")  # No buffering + discard corrupt
-                    ffmpeg_options.append("flags;low_delay")         # Low delay flag
-                    ffmpeg_options.append("max_delay;50000")         # Drastically reduced delay (microseconds)
-                    ffmpeg_options.append("analyzeduration;100000")  # Reduced analyze time
-                    ffmpeg_options.append("probesize;32000")         # Smaller probe size
-                    ffmpeg_options.append("framedrop;1")             # Enable frame dropping
-                    
-                    os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = '|'.join(ffmpeg_options)
-                    cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+                    logger.error(f"[CAMERA:{self.camera_id}] Failed to open stream with hardware acceleration")
+                    raise RuntimeError(f"Failed to open {source} with hardware acceleration")
             else:
                 # For webcams or other sources
                 # JETSON OPTIMIZATION: Use V4L2 with specific settings for USB cameras on Jetson
@@ -182,21 +157,12 @@ class InputStream:
                     )
                     cap = cv2.VideoCapture(v4l2_pipeline, cv2.CAP_GSTREAMER)
                     if not cap.isOpened():
-                        # Fallback to standard capture
-                        cap = cv2.VideoCapture(int(source))
+                        logger.error(f"[CAMERA:{self.camera_id}] Failed to open local camera with hardware acceleration")
+                        raise RuntimeError(f"Failed to open camera {source} with hardware acceleration")
                 else:
-                    cap = cv2.VideoCapture(source)
-            
-            # Wait for connection
-            if not cap.isOpened():
-                logger.error(f"[CAMERA:{self.camera_id}] Failed to connect to: {source}")
-                if ALLOW_FALLBACK:
-                    logger.info(f"[CAMERA:{self.camera_id}] Falling back to local webcam")
-                    cap = cv2.VideoCapture(0)
-                    if not cap.isOpened():
-                        raise RuntimeError("Failed to connect to webcam")
-                else:
-                    raise RuntimeError(f"Failed to connect to camera source: {source}")
+                    # Other source - we require hardware acceleration
+                    logger.error(f"[CAMERA:{self.camera_id}] Unknown source type: {source}")
+                    raise RuntimeError(f"Unsupported camera source: {source}")
             
             # Configure for low latency
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimum buffer
@@ -238,12 +204,8 @@ class InputStream:
                     )
                     logger.info(f"[CAMERA:{self.camera_id}] CUDA resizer initialized")
                 except Exception as e:
-                    logger.warning(f"[CAMERA:{self.camera_id}] Could not initialize CUDA resizer: {str(e)}")
-                    self.use_cuda = False
-                    self.resize_buffer = np.zeros((new_height, new_width, 3), dtype=np.uint8)
-            else:
-                # CPU fallback pre-allocation
-                self.resize_buffer = np.zeros((new_height, new_width, 3), dtype=np.uint8)
+                    logger.error(f"[CAMERA:{self.camera_id}] Could not initialize CUDA resizer: {str(e)}")
+                    raise RuntimeError(f"Failed to initialize CUDA resizer: {str(e)}")
             
             self.cap = cap
             self.source = source
@@ -252,27 +214,11 @@ class InputStream:
             self.decode_errors = 0
             self.last_error_time = 0
             
-            # Clear buffer
-            with self.buffer_lock:
-                for i in range(self.buffer_size):
-                    self.frame_buffer[i] = None
-                self.latest_frame_index = -1
-            
             return cap
-                
+            
         except Exception as e:
-            logger.error(f"[CAMERA:{self.camera_id}] Error connecting to camera: {str(e)}")
-            if ALLOW_FALLBACK:
-                try:
-                    cap = cv2.VideoCapture(0)
-                    if not cap.isOpened():
-                        raise RuntimeError("Failed to connect to webcam")
-                    self.cap = cap
-                    self.source = "webcam"
-                    return cap
-                except Exception as webcam_e:
-                    logger.error(f"[CAMERA:{self.camera_id}] Webcam fallback failed: {str(webcam_e)}")
-            raise
+            logger.error(f"[CAMERA:{self.camera_id}] Error connecting to source: {str(e)}")
+            raise RuntimeError(f"Failed to connect to camera source: {str(e)}")
 
     def _capture_thread_function(self):
         """Ultra-optimized thread function to minimize frame latency on Jetson Nano"""
@@ -298,37 +244,38 @@ class InputStream:
         
         # Signal thread initialization
         self._thread_initialized.set()
-
+        
         while not self.stop_event.is_set():
+            if self.cap is None or not self.cap.isOpened():
+                logger.warning(f"[CAMERA:{self.camera_id}] Connection lost, attempting to reconnect...")
+                time.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
+                self._connect_to_source()
+                continue
+                
             try:
-                # Check connection status
-                if not self.cap or not self.cap.isOpened():
-                    logger.warning(f"[CAMERA:{self.camera_id}] Connection lost, reconnecting...")
-                    self.cap = self._connect_to_source()
-                    time.sleep(reconnect_delay)
-                    reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
-                    continue
-
-                # OPTIMIZATION: Direct read without lock for speed
+                current_time = time.time()
                 ret, frame = self.cap.read()
                 
-                current_time = time.time()
-                
-                # Check if we got a valid frame
-                if not ret or frame is None or len(frame.shape) != 3:
+                if not ret or frame is None or frame.size == 0:
                     consecutive_errors += 1
+                    logger.warning(f"[CAMERA:{self.camera_id}] Frame read error ({consecutive_errors}/{max_consecutive_errors})")
+                    
                     if consecutive_errors >= max_consecutive_errors:
-                        logger.warning(f"[CAMERA:{self.camera_id}] {consecutive_errors} consecutive failures, reconnecting...")
-                        self.cap = self._connect_to_source()
-                        time.sleep(reconnect_delay)
-                        reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
+                        logger.error(f"[CAMERA:{self.camera_id}] Too many consecutive read errors, reconnecting...")
+                        self.cap.release()
+                        self.cap = None
                         consecutive_errors = 0
-                    time.sleep(0.001)  # Minimal sleep
+                        continue
+                        
+                    # Small delay to avoid tight loop
+                    time.sleep(0.1)
                     continue
                 
-                # Successfully got frame
+                # Reset error count on successful read
                 consecutive_errors = 0
-                reconnect_delay = 0.5  # Reset reconnect delay
+                # Reset reconnect delay
+                reconnect_delay = 0.5
                 
                 # JETSON OPTIMIZATION: Resize using CUDA when available
                 if self.resize_dimensions:
@@ -341,16 +288,12 @@ class InputStream:
                                 gpu_resized = self.gpu_resizer.apply(gpu_frame)
                                 frame = gpu_resized.download()
                             else:
-                                # CPU-based resize using pre-allocated buffer
-                                cv2.resize(frame, self.resize_dimensions, 
-                                           dst=self.resize_buffer,
-                                           interpolation=cv2.INTER_NEAREST)
-                                frame = self.resize_buffer
+                                # Should never reach here since we require CUDA
+                                logger.error(f"[CAMERA:{self.camera_id}] CUDA not available for resize - GPU is required")
+                                raise RuntimeError("GPU acceleration is required but not available for resize")
                         except Exception as e:
-                            logger.warning(f"[CAMERA:{self.camera_id}] Resize error: {str(e)}")
-                            # Fallback to standard resize if accelerated version fails
-                            frame = cv2.resize(frame, self.resize_dimensions, 
-                                              interpolation=cv2.INTER_NEAREST)
+                            logger.error(f"[CAMERA:{self.camera_id}] GPU resize error: {str(e)}")
+                            raise RuntimeError(f"Failed to perform GPU accelerated resize: {str(e)}")
                 
                 # OPTIMIZATION: Use ring buffer instead of queue for lower overhead
                 with self.buffer_lock:
