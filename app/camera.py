@@ -2,25 +2,14 @@ import cv2
 import os
 import time
 import threading
-import queue
 import numpy as np
 from .config import CAMERA_URLS, CAMERA_URL, logger, ALLOW_FALLBACK, FRAME_WIDTH, FRAME_HEIGHT
-
-# Check for Jetson Nano
-try:
-    import jetson.utils
-    import jetson.inference
-    JETSON_AVAILABLE = True
-    logger.info("[CAMERA] Jetson modules available, enabling GPU acceleration")
-except ImportError:
-    JETSON_AVAILABLE = False
-    logger.info("[CAMERA] Jetson modules not available, using CPU processing")
 
 class InputStream:
     """
     High-performance camera class optimized for minimal-latency video streaming
     with RTSP acceleration and pipeline optimizations for real-time processing.
-    Now with Jetson Nano GPU acceleration when available.
+    Specifically optimized for Jetson Nano with CUDA hardware acceleration.
     """
 
     def __init__(self, camera_id="main"):
@@ -38,7 +27,9 @@ class InputStream:
         self.height = FRAME_HEIGHT
         self.last_successful_read_time = 0
         self.camera_id = camera_id
-        self.use_gpu = JETSON_AVAILABLE
+        
+        # JETSON OPTIMIZATION: Enable hardware acceleration features
+        self.use_hw_accel = True
         
         # Get the camera URL for the specified camera ID
         if camera_id in CAMERA_URLS:
@@ -63,8 +54,24 @@ class InputStream:
         # Pre-allocated resize dimensions
         self.resize_dimensions = None
         
-        # Pre-allocated resize memory buffer for zero-copy operations
-        self.resize_buffer = None
+        # JETSON OPTIMIZATION: Use CUDA memory for resizing when possible
+        try:
+            # Pre-allocated resize memory buffer for CUDA accelerated operations
+            self.use_cuda = cv2.cuda.getCudaEnabledDeviceCount() > 0
+            if self.use_cuda:
+                logger.info(f"[CAMERA:{self.camera_id}] CUDA acceleration available on Jetson")
+                self.cuda_stream = cv2.cuda.Stream()
+                # Will create CUDA resize buffer later when we know the dimensions
+                self.resize_buffer_gpu = None
+                # CUDA-based resizer
+                self.gpu_resizer = None
+            else:
+                logger.warning(f"[CAMERA:{self.camera_id}] CUDA acceleration not available")
+                self.resize_buffer = None
+        except Exception as e:
+            logger.warning(f"[CAMERA:{self.camera_id}] Error initializing CUDA: {str(e)}")
+            self.use_cuda = False
+            self.resize_buffer = None
         
         # Error handling with fast recovery
         self.decode_errors = 0
@@ -75,16 +82,29 @@ class InputStream:
         # Thread sync
         self._thread_initialized = threading.Event()
         
-        # For Jetson Nano GPU-accelerated processing
-        self.jetson_input = None
+        # JETSON OPTIMIZATION: Set up CPU affinity for better performance
+        self._setup_cpu_affinity()
         
         # Initialize stream with optimized settings
-        logger.info(f"[CAMERA] Initializing low-latency input stream for camera {self.camera_id}")
+        logger.info(f"[CAMERA] Initializing low-latency input stream for camera {self.camera_id} on Jetson Nano")
         self._connect_to_source()
         self._start_capture_thread()
     
+    def _setup_cpu_affinity(self):
+        """Set up CPU affinity for better performance on Jetson"""
+        try:
+            if os.name == 'posix':
+                # Use the last CPU core for camera thread to avoid competing with
+                # the main processing thread which will use the GPU
+                import multiprocessing
+                self.num_cpus = multiprocessing.cpu_count()
+                logger.info(f"[CAMERA:{self.camera_id}] System has {self.num_cpus} CPU cores")
+                # We'll set actual affinity when starting the thread
+        except Exception as e:
+            logger.warning(f"[CAMERA:{self.camera_id}] Could not determine CPU count: {str(e)}")
+    
     def _connect_to_source(self):
-        """Connect to the video source with optimized pipeline settings"""
+        """Connect to the video source with optimized pipeline settings for Jetson Nano"""
         try:
             # Clean the source string
             source = self.camera_url.strip()
@@ -104,106 +124,33 @@ class InputStream:
                     pass
                 self.cap = None
             
-            # Release jetson input if exists
-            if hasattr(self, 'jetson_input') and self.jetson_input is not None:
-                self.jetson_input = None
-            
             # Determine if this is an RTSP source
             is_rtsp = source.startswith('rtsp://')
             
-            # Try to use Jetson GPU acceleration if available
-            if self.use_gpu and JETSON_AVAILABLE:
-                try:
-                    # For RTSP streams, use Jetson's optimized decoder
-                    if is_rtsp:
-                        # Set up GPU-accelerated video input using jetson.utils
-                        logger.info(f"[CAMERA:{self.camera_id}] Using Jetson GPU acceleration for RTSP")
-                        self.jetson_input = jetson.utils.videoSource(source, argv=['--input-codec=h264'])
-                        
-                        # Get one test frame to verify connection
-                        test_frame = self.jetson_input.Capture()
-                        if test_frame:
-                            logger.info(f"[CAMERA:{self.camera_id}] Jetson GPU connection successful")
-                            
-                            # Get the dimensions
-                            width = self.jetson_input.GetWidth()
-                            height = self.jetson_input.GetHeight()
-                            logger.info(f"[CAMERA:{self.camera_id}] Connected via Jetson: {width}x{height}")
-                            
-                            # OPTIMIZATION: Calculate the resize dimensions only once
-                            aspect_ratio = width / height
-                            if aspect_ratio > (FRAME_WIDTH / FRAME_HEIGHT):
-                                # Image is wider than target
-                                new_width = FRAME_WIDTH
-                                new_height = int(FRAME_WIDTH / aspect_ratio)
-                            else:
-                                # Image is taller than target
-                                new_height = FRAME_HEIGHT
-                                new_width = int(FRAME_HEIGHT * aspect_ratio)
-                            
-                            # Ensure dimensions are even numbers
-                            new_width = new_width - (new_width % 2)
-                            new_height = new_height - (new_height % 2)
-                            
-                            logger.info(f"[CAMERA:{self.camera_id}] Resize target: {new_width}x{new_height}")
-                            self.resize_dimensions = (new_width, new_height)
-                            
-                            # Set source and return without initializing OpenCV capture
-                            self.source = source
-                            return None
-                    else:
-                        # For local cameras on Jetson, still try GPU acceleration
-                        if source.isdigit() or source == "0":
-                            logger.info(f"[CAMERA:{self.camera_id}] Using Jetson GPU acceleration for local camera")
-                            # Format for CSI cameras on Jetson: csi://0
-                            self.jetson_input = jetson.utils.videoSource(f"csi://{source}")
-                            
-                            # Get one test frame to verify connection
-                            test_frame = self.jetson_input.Capture()
-                            if test_frame:
-                                logger.info(f"[CAMERA:{self.camera_id}] Jetson GPU connection successful for local camera")
-                                
-                                # Get the dimensions
-                                width = self.jetson_input.GetWidth()
-                                height = self.jetson_input.GetHeight()
-                                
-                                # Calculate resize dimensions
-                                aspect_ratio = width / height
-                                if aspect_ratio > (FRAME_WIDTH / FRAME_HEIGHT):
-                                    # Image is wider than target
-                                    new_width = FRAME_WIDTH
-                                    new_height = int(FRAME_WIDTH / aspect_ratio)
-                                else:
-                                    # Image is taller than target
-                                    new_height = FRAME_HEIGHT
-                                    new_width = int(FRAME_HEIGHT * aspect_ratio)
-                                
-                                # Ensure dimensions are even numbers
-                                new_width = new_width - (new_width % 2)
-                                new_height = new_height - (new_height % 2)
-                                
-                                self.resize_dimensions = (new_width, new_height)
-                                self.source = source
-                                return None
-                
-                except Exception as e:
-                    logger.error(f"[CAMERA:{self.camera_id}] Error initializing Jetson GPU acceleration: {str(e)}")
-                    logger.info(f"[CAMERA:{self.camera_id}] Falling back to CPU processing")
-                    self.use_gpu = False
-                    self.jetson_input = None
-            
-            # If we couldn't use Jetson GPU acceleration, use OpenCV
             if is_rtsp:
-                # CRITICAL OPTIMIZATION: Use GStreamer pipeline for RTSP with ultra-low latency settings
-                # This is one of the most important optimizations for reducing latency
-                gst_pipeline = (
-                    f"rtspsrc location={source} latency=0 buffer-mode=auto ! "
-                    f"rtph264depay ! h264parse ! avdec_h264 ! "
-                    f"videoconvert ! appsink max-buffers=1 drop=true sync=false"
-                )
-                
-                logger.info(f"[CAMERA:{self.camera_id}] Using optimized GStreamer pipeline")
-                cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+                # JETSON OPTIMIZATION: Use specialized hardware-accelerated GStreamer pipeline
+                if self.use_hw_accel:
+                    # Hardware-accelerated pipeline for Jetson
+                    gst_pipeline = (
+                        f"rtspsrc location={source} latency=0 buffer-mode=auto ! "
+                        f"rtph264depay ! h264parse ! nvv4l2decoder ! "  # Nvidia hardware decoder
+                        f"nvvidconv ! video/x-raw, format=BGRx ! "       # Nvidia video converter
+                        f"videoconvert ! video/x-raw, format=BGR ! "     # Convert to BGR for OpenCV
+                        f"appsink max-buffers=1 drop=true sync=false"
+                    )
+                    
+                    logger.info(f"[CAMERA:{self.camera_id}] Using Jetson hardware-accelerated GStreamer pipeline")
+                    cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+                else:
+                    # Regular optimized GStreamer pipeline
+                    gst_pipeline = (
+                        f"rtspsrc location={source} latency=0 buffer-mode=auto ! "
+                        f"rtph264depay ! h264parse ! avdec_h264 ! "
+                        f"videoconvert ! appsink max-buffers=1 drop=true sync=false"
+                    )
+                    
+                    logger.info(f"[CAMERA:{self.camera_id}] Using standard GStreamer pipeline")
+                    cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
                 
                 # Fallback to FFMPEG if GStreamer fails
                 if not cap.isOpened():
@@ -224,10 +171,21 @@ class InputStream:
                     cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
             else:
                 # For webcams or other sources
-                cap = cv2.VideoCapture(source)
+                # JETSON OPTIMIZATION: Use V4L2 with specific settings for USB cameras on Jetson
                 if source.isdigit() or source == "0":  # Local webcam
-                    # Optimized webcam settings
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    # V4L2 capture for Jetson (much more efficient for local cameras)
+                    v4l2_pipeline = (
+                        f"v4l2src device=/dev/video{source} ! "
+                        f"video/x-raw, width=640, height=480, framerate=30/1 ! "
+                        f"videoconvert ! video/x-raw, format=BGR ! "
+                        f"appsink max-buffers=1 drop=true sync=false"
+                    )
+                    cap = cv2.VideoCapture(v4l2_pipeline, cv2.CAP_GSTREAMER)
+                    if not cap.isOpened():
+                        # Fallback to standard capture
+                        cap = cv2.VideoCapture(int(source))
+                else:
+                    cap = cv2.VideoCapture(source)
             
             # Wait for connection
             if not cap.isOpened():
@@ -267,9 +225,25 @@ class InputStream:
             
             logger.info(f"[CAMERA:{self.camera_id}] Resize target: {new_width}x{new_height}")
             
-            # OPTIMIZATION: Pre-allocate resize buffer for zero-copy operations
+            # JETSON OPTIMIZATION: Set up CUDA resize if available
             self.resize_dimensions = (new_width, new_height)
-            self.resize_buffer = np.zeros((new_height, new_width, 3), dtype=np.uint8)
+            
+            if self.use_cuda:
+                try:
+                    # Initialize GPU resizer
+                    self.gpu_resizer = cv2.cuda.createResize(
+                        (width, height), 
+                        (new_width, new_height), 
+                        interpolation=cv2.INTER_NEAREST
+                    )
+                    logger.info(f"[CAMERA:{self.camera_id}] CUDA resizer initialized")
+                except Exception as e:
+                    logger.warning(f"[CAMERA:{self.camera_id}] Could not initialize CUDA resizer: {str(e)}")
+                    self.use_cuda = False
+                    self.resize_buffer = np.zeros((new_height, new_width, 3), dtype=np.uint8)
+            else:
+                # CPU fallback pre-allocation
+                self.resize_buffer = np.zeros((new_height, new_width, 3), dtype=np.uint8)
             
             self.cap = cap
             self.source = source
@@ -301,268 +275,246 @@ class InputStream:
             raise
 
     def _capture_thread_function(self):
-        """Thread function to continuously capture frames and update the buffer"""
+        """Ultra-optimized thread function to minimize frame latency on Jetson Nano"""
+        # Set CPU affinity for this thread if possible
         try:
-            # Signal that the thread is initialized
-            self._thread_initialized.set()
-            
-            # Use the appropriate capture method based on whether we're using Jetson GPU
-            if self.use_gpu and self.jetson_input is not None:
-                logger.info(f"[CAMERA:{self.camera_id}] Starting GPU-accelerated capture thread")
-                self._gpu_capture_thread_function()
-            else:
-                logger.info(f"[CAMERA:{self.camera_id}] Starting CPU capture thread")
-                self._cpu_capture_thread_function()
-                
+            if os.name == 'posix' and hasattr(self, 'num_cpus') and self.num_cpus > 1:
+                import ctypes
+                libc = ctypes.cdll.LoadLibrary('libc.so.6')
+                SYS_gettid = 186
+                tid = libc.syscall(SYS_gettid)
+                # Use the last CPU core for camera thread
+                target_cpu = self.num_cpus - 1
+                os.sched_setaffinity(tid, {target_cpu})
+                logger.info(f"[CAMERA:{self.camera_id}] Set thread affinity to CPU core {target_cpu}")
         except Exception as e:
-            logger.error(f"[CAMERA:{self.camera_id}] Error in capture thread: {str(e)}")
-        finally:
-            logger.info(f"[CAMERA:{self.camera_id}] Capture thread stopped")
-            
-    def _cpu_capture_thread_function(self):
-        """CPU-based frame capture thread function"""
-        consecutive_failures = 0
+            logger.warning(f"[CAMERA:{self.camera_id}] Could not set CPU affinity: {str(e)}")
+        
+        reconnect_delay = 0.5  # Reduced initial delay
+        max_reconnect_delay = 2.0  # Reduced max delay
+        consecutive_errors = 0
+        max_consecutive_errors = 3
+        last_frame_time = 0
+        
+        # Signal thread initialization
+        self._thread_initialized.set()
+
         while not self.stop_event.is_set():
             try:
-                if self.cap is None:
-                    time.sleep(0.1)
+                # Check connection status
+                if not self.cap or not self.cap.isOpened():
+                    logger.warning(f"[CAMERA:{self.camera_id}] Connection lost, reconnecting...")
+                    self.cap = self._connect_to_source()
+                    time.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
                     continue
-                
-                # Read frame with timeout to prevent blocking indefinitely
+
+                # OPTIMIZATION: Direct read without lock for speed
                 ret, frame = self.cap.read()
                 
-                if not ret or frame is None:
-                    consecutive_failures += 1
-                    
-                    # Log a warning every 30 failed attempts
-                    if consecutive_failures % 30 == 1:
-                        logger.warning(f"[CAMERA:{self.camera_id}] Failed to read frame ({consecutive_failures} consecutive failures)")
-                    
-                    # After too many consecutive failures, try to reconnect
-                    if consecutive_failures > 300:  # ~10 seconds at 30fps
-                        logger.error(f"[CAMERA:{self.camera_id}] Too many consecutive failures, reconnecting...")
-                        self._connect_to_source()
-                        consecutive_failures = 0
-                    
-                    time.sleep(0.033)  # ~30fps sleep time
+                current_time = time.time()
+                
+                # Check if we got a valid frame
+                if not ret or frame is None or len(frame.shape) != 3:
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.warning(f"[CAMERA:{self.camera_id}] {consecutive_errors} consecutive failures, reconnecting...")
+                        self.cap = self._connect_to_source()
+                        time.sleep(reconnect_delay)
+                        reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
+                        consecutive_errors = 0
+                    time.sleep(0.001)  # Minimal sleep
                     continue
                 
-                # Reset failure counter on successful read
-                consecutive_failures = 0
+                # Successfully got frame
+                consecutive_errors = 0
+                reconnect_delay = 0.5  # Reset reconnect delay
                 
-                # Update frame count and last successful read time
-                self.frame_count += 1
-                self.last_successful_read_time = time.time()
-                
-                # Resize frame if needed - use zero-copy operations for performance
+                # JETSON OPTIMIZATION: Resize using CUDA when available
                 if self.resize_dimensions:
-                    resized_frame = cv2.resize(
-                        frame, self.resize_dimensions, 
-                        dst=self.resize_buffer if self.resize_buffer is not None else None,
-                        interpolation=cv2.INTER_AREA
-                    )
-                else:
-                    resized_frame = frame
+                    h, w = frame.shape[:2]
+                    if h > 0 and w > 0:
+                        try:
+                            if self.use_cuda:
+                                # Hardware-accelerated resize
+                                gpu_frame = cv2.cuda_GpuMat(frame)
+                                gpu_resized = self.gpu_resizer.apply(gpu_frame)
+                                frame = gpu_resized.download()
+                            else:
+                                # CPU-based resize using pre-allocated buffer
+                                cv2.resize(frame, self.resize_dimensions, 
+                                           dst=self.resize_buffer,
+                                           interpolation=cv2.INTER_NEAREST)
+                                frame = self.resize_buffer
+                        except Exception as e:
+                            logger.warning(f"[CAMERA:{self.camera_id}] Resize error: {str(e)}")
+                            # Fallback to standard resize if accelerated version fails
+                            frame = cv2.resize(frame, self.resize_dimensions, 
+                                              interpolation=cv2.INTER_NEAREST)
                 
-                # Store the frame in the buffer
+                # OPTIMIZATION: Use ring buffer instead of queue for lower overhead
                 with self.buffer_lock:
-                    self.latest_frame_index = (self.latest_frame_index + 1) % self.buffer_size
-                    self.frame_buffer[self.latest_frame_index] = resized_frame
+                    # Update buffer with new frame
+                    self.buffer_index = (self.buffer_index + 1) % self.buffer_size
+                    self.frame_buffer[self.buffer_index] = frame
+                    self.latest_frame_index = self.buffer_index
+                
+                self.last_successful_read_time = current_time
+                self.frame_count += 1
+                
+                # OPTIMIZATION: Dynamic sleep based on frame rate
+                # If we're getting frames too quickly, sleep a tiny bit to prevent CPU overload
+                elapsed = current_time - last_frame_time
+                if elapsed < 0.016:  # targeting 60fps max (1/60 ≈ 0.016)
+                    sleep_time = max(0.001, 0.016 - elapsed)
+                    time.sleep(sleep_time)
+                
+                last_frame_time = current_time
                 
             except Exception as e:
-                self.decode_errors += 1
-                curr_time = time.time()
-                
-                # Only log the error if not too frequent to avoid log spam
-                if curr_time - self.last_error_time > 5.0:
-                    logger.error(f"[CAMERA:{self.camera_id}] Error reading frame: {str(e)}")
-                    self.last_error_time = curr_time
-                
-                # Attempt to reconnect if too many errors in a short time
-                if self.decode_errors > self.error_threshold and curr_time - self.last_error_time < self.error_window:
-                    logger.warning(f"[CAMERA:{self.camera_id}] Too many decode errors, reconnecting...")
-                    self._connect_to_source()
-                    self.decode_errors = 0
-                
-                time.sleep(0.033)  # ~30fps sleep time
-
-    def _gpu_capture_thread_function(self):
-        """GPU-accelerated frame capture thread function using Jetson Nano"""
-        consecutive_failures = 0
-        while not self.stop_event.is_set():
-            try:
-                if self.jetson_input is None:
-                    time.sleep(0.1)
-                    continue
-                
-                # Capture frame with Jetson GPU acceleration
-                cuda_frame = self.jetson_input.Capture()
-                
-                if cuda_frame is None:
-                    consecutive_failures += 1
-                    
-                    # Log a warning every 30 failed attempts
-                    if consecutive_failures % 30 == 1:
-                        logger.warning(f"[CAMERA:{self.camera_id}] Failed to read GPU frame ({consecutive_failures} consecutive failures)")
-                    
-                    # After too many consecutive failures, try to reconnect
-                    if consecutive_failures > 300:  # ~10 seconds at 30fps
-                        logger.error(f"[CAMERA:{self.camera_id}] Too many consecutive failures, reconnecting...")
-                        self._connect_to_source()
-                        consecutive_failures = 0
-                    
-                    time.sleep(0.033)  # ~30fps sleep time
-                    continue
-                
-                # Reset failure counter on successful read
-                consecutive_failures = 0
-                
-                # Convert CUDA frame to numpy array (CPU)
-                # This is necessary for compatibility with the rest of the pipeline
-                cpu_frame = jetson.utils.cudaToNumpy(cuda_frame)
-                
-                # Convert from RGB to BGR (OpenCV format)
-                cpu_frame = cv2.cvtColor(cpu_frame, cv2.COLOR_RGB2BGR)
-                
-                # Update frame count and last successful read time
-                self.frame_count += 1
-                self.last_successful_read_time = time.time()
-                
-                # Resize frame if needed
-                if self.resize_dimensions:
-                    resized_frame = cv2.resize(
-                        cpu_frame, self.resize_dimensions, 
-                        interpolation=cv2.INTER_AREA
-                    )
-                else:
-                    resized_frame = cpu_frame
-                
-                # Store the frame in the buffer
-                with self.buffer_lock:
-                    self.latest_frame_index = (self.latest_frame_index + 1) % self.buffer_size
-                    self.frame_buffer[self.latest_frame_index] = resized_frame
-                
-            except Exception as e:
-                self.decode_errors += 1
-                curr_time = time.time()
-                
-                # Only log the error if not too frequent to avoid log spam
-                if curr_time - self.last_error_time > 5.0:
-                    logger.error(f"[CAMERA:{self.camera_id}] Error reading GPU frame: {str(e)}")
-                    self.last_error_time = curr_time
-                
-                # Attempt to reconnect if too many errors in a short time
-                if self.decode_errors > self.error_threshold and curr_time - self.last_error_time < self.error_window:
-                    logger.warning(f"[CAMERA:{self.camera_id}] Too many GPU decode errors, reconnecting...")
-                    self._connect_to_source()
-                    self.decode_errors = 0
-                
-                time.sleep(0.033)  # ~30fps sleep time
+                logger.error(f"[CAMERA:{self.camera_id}] Error in capture thread: {str(e)}")
+                time.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
 
     def _start_capture_thread(self):
-        """Start the frame capture thread"""
-        # Stop existing thread if running
+        """Start the frame capture thread with fast initialization"""
+        # Don't start if already running
         if self.capture_thread is not None and self.capture_thread.is_alive():
-            self.stop_event.set()
-            self.capture_thread.join(timeout=1.0)
-            self.stop_event.clear()
-            
-        # Ensure previous thread is not blocking
-        if hasattr(self, '_thread_initialized'):
-            self._thread_initialized.clear()
-
-        # Start a new capture thread
-        logger.info(f"[CAMERA:{self.camera_id}] Starting capture thread")
+            return
+        
+        # Clear stop event and reset initialization event
+        self.stop_event.clear()
+        self._thread_initialized.clear()
+        
+        # Create and start thread with high priority
         self.capture_thread = threading.Thread(
-            target=self._capture_thread_function,
-            name=f"FrameCapture-{self.camera_id}",
+            target=self._capture_thread_function, 
+            name=f"Camera-{self.camera_id}-Thread",
             daemon=True
         )
-        self.capture_thread.start()
         
-        # Wait for thread to initialize (max 5 seconds)
-        initialized = self._thread_initialized.wait(timeout=5.0)
-        if not initialized:
-            logger.warning(f"[CAMERA:{self.camera_id}] Capture thread initialization timeout")
+        # Start the thread
+        try:
+            self.capture_thread.start()
+        except Exception as e:
+            logger.error(f"[CAMERA:{self.camera_id}] Failed to start thread: {str(e)}")
+            return
+        
+        # Wait for thread initialization but with shorter timeout
+        if not self._thread_initialized.wait(timeout=2.0):
+            logger.warning(f"[CAMERA:{self.camera_id}] Thread initialization timeout")
+        
+        logger.info(f"[CAMERA:{self.camera_id}] Started high-priority capture thread")
 
     def read(self):
-        """
-        Read the latest frame from the buffer
-        
-        Returns:
-            tuple: (success, frame) where success is a boolean and frame is the image
-        """
-        # Get the latest frame from the buffer
-        with self.buffer_lock:
-            if self.latest_frame_index >= 0 and self.frame_buffer[self.latest_frame_index] is not None:
-                success = True
-                frame = self.frame_buffer[self.latest_frame_index].copy()
-                self.last_frame = frame
-            else:
-                success = False
-                frame = None
-
-        # If no frames are available in buffer but we have a previous frame, use that
-        if not success and self.last_frame is not None:
-            success = True
-            frame = self.last_frame
+        """Ultra low-latency frame reading directly from the latest frame"""
+        try:
+            # OPTIMIZATION: Short-circuit for speed - direct access to latest frame
+            with self.buffer_lock:
+                if self.latest_frame_index >= 0:
+                    frame = self.frame_buffer[self.latest_frame_index]
+                    if frame is not None:
+                        self.last_frame = frame  # Cache it
+                        return True, frame
             
-        # If all else fails, return a blank frame
-        if not success:
-            logger.warning(f"[CAMERA:{self.camera_id}] No frames available yet")
-            success = True
-            frame = np.zeros((self.height, self.width, 3), dtype=np.uint8)
-
-        return success, frame
+            # Check if capture thread is running, restart if needed
+            if self.capture_thread is None or not self.capture_thread.is_alive():
+                logger.warning(f"[CAMERA:{self.camera_id}] Capture thread not running, restarting")
+                self._start_capture_thread()
+                time.sleep(0.05)  # Reduced delay
+            
+            # OPTIMIZATION: Direct capture as fallback but only if really needed
+            # This reduces excess buffer reads when we already have a thread
+            if self.cap and self.cap.isOpened():
+                try:
+                    ret, frame = self.cap.read()
+                    if ret and frame is not None:
+                        # Resize if needed
+                        if self.resize_dimensions:
+                            # Try hardware acceleration if available
+                            if self.use_cuda:
+                                try:
+                                    gpu_frame = cv2.cuda_GpuMat(frame)
+                                    gpu_resized = self.gpu_resizer.apply(gpu_frame)
+                                    frame = gpu_resized.download()
+                                except Exception:
+                                    # Fallback to CPU
+                                    frame = cv2.resize(frame, self.resize_dimensions, 
+                                                    interpolation=cv2.INTER_NEAREST)
+                            else:
+                                # CPU resize
+                                try:
+                                    cv2.resize(frame, self.resize_dimensions, dst=self.resize_buffer,
+                                            interpolation=cv2.INTER_NEAREST)
+                                    frame = self.resize_buffer
+                                except:
+                                    frame = cv2.resize(frame, self.resize_dimensions, 
+                                                    interpolation=cv2.INTER_NEAREST)
+                                
+                        self.last_frame = frame
+                        return True, frame
+                except Exception as e:
+                    logger.debug(f"[CAMERA:{self.camera_id}] Error in direct capture: {str(e)}")
+            
+            # Last resort: use cached frame
+            if self.last_frame is not None:
+                return True, self.last_frame
+                
+        except Exception as e:
+            logger.error(f"[CAMERA:{self.camera_id}] Error in read: {str(e)}")
+            
+        # Final fallback
+        if self.last_frame is not None:
+            return True, self.last_frame
+            
+        return False, None
 
     def get_frame_rate(self):
-        """
-        Estimate the current frame rate based on recent captures
+        """Calculate the effective frame rate with minimal overhead"""
+        current_time = time.time()
+        if hasattr(self, 'last_fps_time') and hasattr(self, 'last_frame_count'):
+            elapsed = current_time - self.last_fps_time
+            if elapsed > 0:
+                frames = self.frame_count - self.last_frame_count
+                fps = frames / elapsed
+                self.last_fps_time = current_time
+                self.last_frame_count = self.frame_count
+                return fps
         
-        Returns:
-            float: Estimated frames per second
-        """
-        # If we're using Jetson GPU, try to get the frame rate directly
-        if self.use_gpu and self.jetson_input is not None:
-            try:
-                return self.jetson_input.GetFrameRate()
-            except:
-                pass
-        
-        # Otherwise, try to get it from OpenCV
-        if self.cap is not None:
-            try:
-                fps = self.cap.get(cv2.CAP_PROP_FPS)
-                if fps > 0:
-                    return fps
-            except:
-                pass
-            
-        # Last resort: default to 30fps
-        return 30.0
+        # Initialize if first call
+        self.last_fps_time = current_time
+        self.last_frame_count = self.frame_count
+        return 0
 
     def release(self):
-        """Release resources and stop capture thread"""
-        logger.info(f"[CAMERA:{self.camera_id}] Releasing resources")
+        """Safely release all resources with minimal waiting"""
+        # Set stop event
+        self.stop_event.set()
         
-        # Stop the capture thread
-        if self.capture_thread is not None and self.capture_thread.is_alive():
-            self.stop_event.set()
+        # Wait briefly for thread to stop
+        if self.capture_thread is not None:
             try:
-                self.capture_thread.join(timeout=2.0)
-            except:
+                self.capture_thread.join(timeout=0.5)  # Reduced timeout
+            except Exception:
                 pass
-        
-        # Release OpenCV capture
+            
+        # Release capture device
         if self.cap is not None:
             try:
                 self.cap.release()
-            except:
+            except Exception:
                 pass
             self.cap = None
         
-        # Release Jetson resources
-        if hasattr(self, 'jetson_input') and self.jetson_input is not None:
-            self.jetson_input = None
+        # Release CUDA resources
+        if self.use_cuda:
+            try:
+                if hasattr(self, 'cuda_stream') and self.cuda_stream is not None:
+                    self.cuda_stream.release()
+                if hasattr(self, 'gpu_resizer') and self.gpu_resizer is not None:
+                    # No explicit release needed for resizer
+                    pass
+            except Exception as e:
+                logger.warning(f"[CAMERA:{self.camera_id}] Error releasing CUDA resources: {str(e)}")
         
-        logger.info(f"[CAMERA:{self.camera_id}] Resources released")
+        logger.info(f"[CAMERA:{self.camera_id}] Released resources")

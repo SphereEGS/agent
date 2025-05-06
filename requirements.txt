@@ -6,8 +6,3 @@ huggingface-hub
 python-dotenv
 python-socketio[client]
 pyserial
-# Jetson Nano packages
-# Note: These must be installed separately on Jetson Nano
-# as they come pre-installed with JetPack
-# jetson-inference
-# jetson-utils

@@ -10,6 +10,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from functools import partial
 import threading
 import queue
+import sys
 from typing import Dict, Tuple, Optional, List, Callable, Any
 
 from .config import (
@@ -22,7 +23,7 @@ from .config import (
 # Use a lower resolution for license plate detection to speed up inference
 PLATE_DETECTION_SIZE = 480
 
-def preprocess_image(image):
+def preprocess_image(image, use_gpu=False):
     """
     Preprocess the vehicle snapshot to improve license plate recognition.
     Steps:
@@ -30,7 +31,51 @@ def preprocess_image(image):
       2. Perform histogram equalization for contrast enhancement.
       3. Convert back to BGR.
       4. Apply an unsharp mask to sharpen the image.
+      
+    Args:
+        image: Input image
+        use_gpu: Whether to use GPU acceleration if available
     """
+    try:
+        if use_gpu and cv2.cuda.getCudaEnabledDeviceCount() > 0:
+            # GPU path
+            try:
+                # Create GPU matrices
+                gpu_image = cv2.cuda_GpuMat()
+                gpu_image.upload(image)
+                
+                # Convert to grayscale
+                gpu_gray = cv2.cuda.cvtColor(gpu_image, cv2.COLOR_BGR2GRAY)
+                
+                # Equalize histogram to enhance contrast
+                gpu_equ = cv2.cuda.equalizeHist(gpu_gray)
+                
+                # Convert back to BGR format
+                gpu_equ_bgr = cv2.cuda.cvtColor(gpu_equ, cv2.COLOR_GRAY2BGR)
+                
+                # Download for GaussianBlur (not available in CUDA)
+                equ_bgr = gpu_equ_bgr.download()
+                
+                # Release GPU resources
+                gpu_image.release()
+                gpu_gray.release()
+                gpu_equ.release()
+                gpu_equ_bgr.release()
+                
+                # Apply unsharp mask for sharpening
+                blurred = cv2.GaussianBlur(equ_bgr, (0, 0), 3)
+                sharpened = cv2.addWeighted(equ_bgr, 1.5, blurred, -0.5, 0)
+                
+                return sharpened
+            except Exception as e:
+                logger.debug(f"[LPR] GPU preprocessing failed, using CPU: {str(e)}")
+                # Fall back to CPU path
+                pass
+    except Exception:
+        # GPU not available or other error, use CPU
+        pass
+        
+    # CPU path
     # Convert to grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     # Equalize histogram to enhance contrast
@@ -42,19 +87,68 @@ def preprocess_image(image):
     sharpened = cv2.addWeighted(equ_bgr, 1.5, blurred, -0.5, 0)
     return sharpened
 
+# Helper function to check GPU availability
+def setup_gpu():
+    """Setup and verify GPU availability for Jetson Nano and other CUDA devices"""
+    try:
+        # Check if CUDA is available for OpenCV
+        if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+            # Initialize CUDA context
+            cv2.cuda.setDevice(0)
+            # Create a small test operation to verify CUDA is working
+            test_mat = cv2.cuda_GpuMat((10, 10), cv2.CV_8UC3)
+            test_mat.upload(np.zeros((10, 10, 3), dtype=np.uint8))
+            test_mat.release()
+            
+            # Check for Jetson-specific environment
+            if os.path.exists('/proc/device-tree/model'):
+                try:
+                    with open('/proc/device-tree/model', 'r') as f:
+                        model = f.read()
+                        if 'Jetson' in model:
+                            logger.info("[LPR] Detected Jetson Nano hardware")
+                            # Apply Jetson-specific optimizations
+                            try:
+                                import jetson.utils
+                                logger.info("[LPR] Jetson utils package detected")
+                            except ImportError:
+                                logger.warning("[LPR] Running on Jetson but jetson.utils not available")
+                except Exception as e:
+                    logger.debug(f"[LPR] Error reading device model: {str(e)}")
+            
+            logger.info("[LPR] GPU acceleration enabled for OpenCV")
+            return True
+        else:
+            logger.info("[LPR] No CUDA-capable GPU detected for OpenCV")
+            return False
+    except Exception as e:
+        logger.warning(f"[LPR] Error setting up GPU, falling back to CPU: {str(e)}")
+        return False
+
 # Helper functions that will be called by ProcessPoolExecutor
-def _find_plate_in_image(model_path, image):
+def _find_plate_in_image(model_path, image, use_gpu=False):
     try:
         model = YOLO(model_path)
+        # Set model to GPU if available
+        if use_gpu and hasattr(model, 'to'):
+            try:
+                model.to(0)  # Use GPU 0
+            except Exception as e:
+                logger.debug(f"[LPR] Could not set model to GPU: {str(e)}")
+
         # Preprocess the image before detection
-        preprocessed = preprocess_image(image)
+        preprocessed = preprocess_image(image, use_gpu)
+        
+        # Use half precision for GPU inference
+        half_precision = use_gpu
         
         results = model.predict(
             preprocessed, 
             conf=0.25,
             iou=0.5,
             verbose=False,
-            imgsz=PLATE_DETECTION_SIZE
+            imgsz=PLATE_DETECTION_SIZE,
+            half=half_precision
         )
         
         if not results or len(results[0].boxes) == 0:
@@ -90,22 +184,47 @@ def _find_plate_in_image(model_path, image):
         y1 = max(0, int(y1 - pad_y))
         x2 = min(w, int(x2 + pad_x))
         y2 = min(h, int(y2 + pad_y))
-        plate_img = preprocessed[y1:y2, x1:x2]
+        
+        # Use GPU for ROI extraction if available
+        if use_gpu:
+            try:
+                gpu_preprocessed = cv2.cuda_GpuMat()
+                gpu_preprocessed.upload(preprocessed)
+                gpu_plate = gpu_preprocessed.colRange(x1, x2).rowRange(y1, y2)
+                plate_img = gpu_plate.download()
+                gpu_preprocessed.release()
+                gpu_plate.release()
+            except Exception as e:
+                logger.debug(f"[LPR] GPU extraction failed, using CPU: {str(e)}")
+                plate_img = preprocessed[y1:y2, x1:x2]
+        else:
+            plate_img = preprocessed[y1:y2, x1:x2]
         
         return plate_img, plate_scores[best_idx], preprocessed
     except Exception as e:
         logger.error(f"Error in _find_plate_in_image: {str(e)}")
         return None, None, None
 
-def _recognize_plate(model_path, plate_image):
+def _recognize_plate(model_path, plate_image, use_gpu=False):
     try:
         model = YOLO(model_path)
+        # Set model to GPU if available
+        if use_gpu and hasattr(model, 'to'):
+            try:
+                model.to(0)  # Use GPU 0
+            except Exception as e:
+                logger.debug(f"[LPR] Could not set model to GPU: {str(e)}")
+                
+        # Use half precision for GPU inference
+        half_precision = use_gpu
+        
         results = model.predict(
             plate_image, 
             conf=0.25,
             iou=0.45,
             imgsz=PLATE_DETECTION_SIZE,
-            verbose=False
+            verbose=False,
+            half=half_precision
         )
         
         if not results or len(results[0].boxes) == 0:
@@ -140,9 +259,16 @@ class PlateProcessor:
         os.makedirs("models", exist_ok=True)
         os.makedirs("output/plates", exist_ok=True)
         
+        # Setup GPU acceleration if available
+        self.gpu_available = setup_gpu()
+        
         # Set default max_workers to number of CPUs
         if max_workers is None:
-            max_workers = max(2, multiprocessing.cpu_count() - 1)
+            if self.gpu_available:
+                # Use fewer workers when GPU is active to prevent overloading
+                max_workers = max(1, multiprocessing.cpu_count() // 2)
+            else:
+                max_workers = max(2, multiprocessing.cpu_count() - 1)
         self.max_workers = max_workers
         
         try:
@@ -156,7 +282,17 @@ class PlateProcessor:
             
             # Initialize a local model for synchronous operations
             self.lpr_model = YOLO(LPR_MODEL_PATH)
-            logger.info("LPR model loaded successfully")
+            
+            # Set model to GPU if available
+            if self.gpu_available and hasattr(self.lpr_model, 'to'):
+                try:
+                    self.lpr_model.to(0)  # Use GPU 0
+                    logger.info("LPR model loaded on GPU")
+                except Exception as e:
+                    logger.warning(f"Could not load LPR model on GPU: {str(e)}")
+                    self.gpu_available = False
+            
+            logger.info(f"LPR model loaded successfully on {'GPU' if self.gpu_available else 'CPU'}")
             self.font_path = FONT_PATH
             
             # Initialize thread pool for lighter tasks
@@ -177,7 +313,7 @@ class PlateProcessor:
             self.worker_thread = threading.Thread(target=self._process_queue, daemon=True)
             self.worker_thread.start()
             
-            logger.info(f"Initialized plate processor with {self.max_workers} workers")
+            logger.info(f"Initialized plate processor with {self.max_workers} workers, GPU acceleration: {self.gpu_available}")
             
         except Exception as e:
             logger.error(f"Error initializing license plate model: {str(e)}")
@@ -269,11 +405,11 @@ class PlateProcessor:
                 return None, None
             
             # Use synchronous processing but in background thread
-            plate_image, _, _ = _find_plate_in_image(LPR_MODEL_PATH, image)
+            plate_image, _, _ = _find_plate_in_image(LPR_MODEL_PATH, image, self.gpu_available)
             if plate_image is None:
                 return None, None
                 
-            plate_text = _recognize_plate(LPR_MODEL_PATH, plate_image)
+            plate_text = _recognize_plate(LPR_MODEL_PATH, plate_image, self.gpu_available)
             if plate_text is None:
                 return None, None
                 
@@ -301,14 +437,18 @@ class PlateProcessor:
             
         try:
             # Preprocess the image before detection
-            preprocessed = preprocess_image(image)
+            preprocessed = preprocess_image(image, self.gpu_available)
+            
+            # Use half precision for GPU inference
+            half_precision = self.gpu_available
             
             results = self.lpr_model.predict(
                 preprocessed, 
                 conf=0.25,
                 iou=0.5,
                 verbose=False,
-                imgsz=PLATE_DETECTION_SIZE
+                imgsz=PLATE_DETECTION_SIZE,
+                half=half_precision
             )
             
             if not results or len(results[0].boxes) == 0:
@@ -347,7 +487,22 @@ class PlateProcessor:
             y1 = max(0, int(y1 - pad_y))
             x2 = min(w, int(x2 + pad_x))
             y2 = min(h, int(y2 + pad_y))
-            plate_img = preprocessed[y1:y2, x1:x2]
+            
+            # Use GPU for ROI extraction if available
+            if self.gpu_available:
+                try:
+                    gpu_preprocessed = cv2.cuda_GpuMat()
+                    gpu_preprocessed.upload(preprocessed)
+                    gpu_plate = gpu_preprocessed.colRange(x1, x2).rowRange(y1, y2)
+                    plate_img = gpu_plate.download()
+                    gpu_preprocessed.release()
+                    gpu_plate.release()
+                except Exception as e:
+                    logger.debug(f"[LPR] GPU extraction failed in find_best_plate_in_image, using CPU: {str(e)}")
+                    plate_img = preprocessed[y1:y2, x1:x2]
+            else:
+                plate_img = preprocessed[y1:y2, x1:x2]
+                
             logger.info(f"License plate detected with confidence: {plate_scores[best_idx]:.2f}")
             return plate_img
 
@@ -365,12 +520,16 @@ class PlateProcessor:
             return None
             
         try:
+            # Use half precision for GPU inference
+            half_precision = self.gpu_available
+            
             results = self.lpr_model.predict(
                 plate_image, 
                 conf=0.25,
                 iou=0.45,
                 imgsz=PLATE_DETECTION_SIZE,
-                verbose=False
+                verbose=False,
+                half=half_precision
             )
             
             if not results or len(results[0].boxes) == 0:
@@ -406,7 +565,22 @@ class PlateProcessor:
         """Add recognized license plate text to the image"""
         if not text or image is None:
             return image
+            
         try:
+            # Skip expensive text rendering if it's a small image or on Jetson Nano
+            # to improve performance, as this is just a visualization function
+            image_size = image.shape[0] * image.shape[1]
+            is_small_image = image_size < 100000  # Skip for small images
+            
+            if self.gpu_available and is_small_image:
+                # Simplified version for Jetson Nano - just add a generic text indicator
+                h, w = image.shape[:2]
+                cv2.rectangle(image, (10, h-30), (w-10, h-10), (0, 0, 0), -1)
+                cv2.putText(image, "Plate Detected", (15, h-15), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                return image
+            
+            # Full version with proper text rendering
             image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
             pil_image = Image.fromarray(image_rgb)
             height, _ = image.shape[:2]
@@ -475,21 +649,57 @@ class PlateProcessor:
         Maintains backwards compatibility with existing code.
         """
         try:
-            # Preprocess the entire vehicle image before processing the license plate
-            preprocessed_vehicle = preprocess_image(vehicle_image)
+            # Optimize preprocessing with GPU if available
+            start_time = time.time()
+            if self.gpu_available:
+                try:
+                    # Upload to GPU for preprocessing
+                    gpu_vehicle = cv2.cuda_GpuMat()
+                    gpu_vehicle.upload(vehicle_image)
+                    
+                    # Use OpenCV CUDA for preprocessing if possible
+                    gpu_gray = cv2.cuda.cvtColor(gpu_vehicle, cv2.COLOR_BGR2GRAY)
+                    gpu_equ = cv2.cuda.equalizeHist(gpu_gray)
+                    gpu_equ_bgr = cv2.cuda.cvtColor(gpu_equ, cv2.COLOR_GRAY2BGR)
+                    
+                    # Download for operations not available in CUDA
+                    equ_bgr = gpu_equ_bgr.download()
+                    gpu_vehicle.release()
+                    gpu_gray.release()
+                    gpu_equ.release()
+                    gpu_equ_bgr.release()
+                    
+                    # Continue with standard preprocessing
+                    blurred = cv2.GaussianBlur(equ_bgr, (0, 0), 3)
+                    preprocessed_vehicle = cv2.addWeighted(equ_bgr, 1.5, blurred, -0.5, 0)
+                except Exception as e:
+                    logger.debug(f"[LPR] GPU preprocessing failed, using CPU: {str(e)}")
+                    preprocessed_vehicle = preprocess_image(vehicle_image, self.gpu_available)
+            else:
+                preprocessed_vehicle = preprocess_image(vehicle_image, self.gpu_available)
+            
+            # Find license plate in the image
             plate_image = self.find_best_plate_in_image(preprocessed_vehicle)
             if plate_image is None:
                 logger.info("No license plate found in vehicle image")
                 return None, None
+                
+            # Recognize text on the plate
             plate_text = self.recognize_plate(plate_image)
             if plate_text is None:
                 logger.info("Could not recognize text on license plate")
                 return None, None
+                
+            # Add text overlay to the plate image
             processed_image = self.add_text_to_image(plate_image, plate_text)
+            
             if save_path and processed_image is not None:
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 cv2.imwrite(save_path, processed_image)
                 logger.info(f"Saved processed plate image to {save_path}")
+                
+            process_time = time.time() - start_time
+            logger.debug(f"[LPR] Vehicle image processed in {process_time:.3f}s on {'GPU' if self.gpu_available else 'CPU'}")
             return plate_text, processed_image
         except Exception as e:
             logger.error(f"Error processing vehicle image: {str(e)}")
