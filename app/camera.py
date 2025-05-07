@@ -143,20 +143,21 @@ class InputStream:
                 # Streaming source (RTSP/RTMP/HTTP)
                 if source.startswith("rtsp://"):
                     # RTSP-specific optimized pipeline for DeepStream
-                    source_element = (f"rtspsrc location={source} latency=0 buffer-mode=auto drop-on-latency=true ! "
-                                    f"rtph264depay ! h264parse ! ")
+                    # FIX: Properly quote the URL and avoid using it directly in the pipeline string
+                    source_element = f'rtspsrc location="{source}" latency=0 buffer-mode=auto drop-on-latency=true ! '
+                    source_element += 'rtph264depay ! h264parse ! '
                     # Add hardware decoding if CUDA is available
                     if self.cuda_available:
-                        source_element += " ! nvv4l2decoder enable-max-performance=1 ! nvvidconv"
+                        source_element += "nvv4l2decoder enable-max-performance=1 ! nvvidconv"
                     else:
-                        source_element += " ! avdec_h264 ! videoconvert"
+                        source_element += "avdec_h264 ! videoconvert"
                         
                 elif source.startswith("http") and source.endswith((".mp4", ".mkv", ".avi")):
                     # HTTP video file
-                    source_element = f"souphttpsrc location={source} ! decodebin"
+                    source_element = f'souphttpsrc location="{source}" ! decodebin'
                 else:
                     # Generic streaming source
-                    source_element = f"uridecodebin uri={source}"
+                    source_element = f'uridecodebin uri="{source}"'
             
             elif source.isdigit() or source == "0":
                 # Local camera (V4L2)
@@ -172,7 +173,12 @@ class InputStream:
                             rtsp_part = rtsp_part[:rtsp_part.find(marker)]
                     
                     logger.warning(f"[CAMERA:{self.camera_id}] Attempting to parse malformed RTSP URL: {rtsp_part}")
-                    source_element = f"rtspsrc location={rtsp_part} latency=0 buffer-mode=auto drop-on-latency=true ! rtph264depay ! h264parse ! "
+                    source_element = f'rtspsrc location="{rtsp_part}" latency=0 buffer-mode=auto drop-on-latency=true ! '
+                    source_element += 'rtph264depay ! h264parse ! '
+                    if self.cuda_available:
+                        source_element += "nvv4l2decoder enable-max-performance=1 ! nvvidconv"
+                    else:
+                        source_element += "avdec_h264 ! videoconvert"
                 else:
                     # Unknown source type
                     logger.error(f"[CAMERA:{self.camera_id}] Unsupported source: {source}")
