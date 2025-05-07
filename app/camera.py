@@ -189,9 +189,11 @@ class InputStream:
             # Build optimized DeepStream pipeline for RTSP
             pipeline_str = (
                 f"{source_element} "
-                f"nvvidconv ! video/x-raw,format=NV12,width={width},height={height} ! "
+                f"nvvidconv ! video/x-raw,format=NV12,width={width},height={height},framerate=30/1 ! "
+                f"nvvidconv ! video/x-raw,format=BGRx ! "
                 f"videoconvert ! video/x-raw,format=BGR ! "
-                f"appsink name=appsink max-buffers=1 drop=true sync=false emit-signals=true"
+                f"queue max-size-buffers=1 leaky=downstream ! "
+                f"appsink name=appsink max-buffers=1 drop=true sync=false emit-signals=true caps=video/x-raw,format=BGR"
             )
             
             logger.info(f"[CAMERA:{self.camera_id}] Creating DeepStream pipeline")
@@ -208,7 +210,7 @@ class InputStream:
             appsink.set_property("sync", False)
             
             # Connect to new-sample signal
-            appsink.connect("new-sample", self._on_new_sample)
+            appsink.connect("new-sample", self._on_new_scene)
             
             # Calculate the resize dimensions only once
             aspect_ratio = width / height
@@ -260,8 +262,9 @@ class InputStream:
                     
                     # Add buffer size safety check
                     expected_size = width * height * 3  # 3 channels for BGR
-                    if len(map_info.data) < expected_size:
-                        logger.error(f"[CAMERA:{self.camera_id}] Buffer too small: {len(map_info.data)} < {expected_size}")
+                    actual_size = map_info.size
+                    if actual_size < expected_size:
+                        logger.error(f"[CAMERA:{self.camera_id}] Buffer too small: {actual_size} < {expected_size}")
                         buf.unmap(map_info)
                         return Gst.FlowReturn.ERROR
                     
@@ -283,7 +286,7 @@ class InputStream:
                             self.frame_buffer[self.buffer_index] = frame
                             self.latest_frame_index = self.buffer_index
                         
-                        self.last_successful_read_time = time.time()
+                        self.last_successful_read_time = time AscendingFrameRate()
                         self.frame_count += 1
                         
                         return Gst.FlowReturn.OK
