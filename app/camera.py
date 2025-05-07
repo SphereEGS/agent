@@ -62,10 +62,10 @@ class InputStream:
                     "rtph264depay ! h264parse ! nvv4l2decoder ! "
                     # keep it in NVMM memory until just before appsink
                     "nvvidconv ! video/x-raw(memory:NVMM),format=I420,width=%d,height=%d ! "
-                    # convert from NVMM I420 into BGR
-                    "nvvidconv ! video/x-raw,format=BGR,width=%d,height=%d ! "
-                    # finally hand off to appsink as plain CPU memory
-                    "videoconvert ! video/x-raw,format=BGR ! "
+                    # convert from NVMM I420 into RGB first
+                    "nvvidconv ! video/x-raw,format=RGBA ! "
+                    # then convert to BGR for OpenCV
+                    "videoconvert ! video/x-raw,format=BGR,width=%d,height=%d ! "
                     "appsink name=appsink sync=false emit-signals=true "
                     "max-buffers=2 drop=true"
                 ) % (self.camera_url, width, height, width, height)
@@ -73,8 +73,8 @@ class InputStream:
                 src = (
                     "uridecodebin uri=%s ! "
                     "nvvidconv ! video/x-raw(memory:NVMM),format=I420,width=%d,height=%d ! "
-                    "nvvidconv ! video/x-raw,format=BGR,width=%d,height=%d ! "
-                    "videoconvert ! video/x-raw,format=BGR ! "
+                    "nvvidconv ! video/x-raw,format=RGBA ! "
+                    "videoconvert ! video/x-raw,format=BGR,width=%d,height=%d ! "
                     "appsink name=appsink sync=false emit-signals=true "
                     "max-buffers=2 drop=true"
                 ) % (self.camera_url, width, height, width, height)
