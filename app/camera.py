@@ -1,8 +1,10 @@
+import cv2
 import os
 import time
 import threading
 import numpy as np
 import gi
+import logging
 from .config import CAMERA_URLS, CAMERA_URL, logger, ALLOW_FALLBACK, FRAME_WIDTH, FRAME_HEIGHT
 
 # Required GStreamer imports for DeepStream
@@ -144,22 +146,26 @@ class InputStream:
                     source_element = (
                         f'rtspsrc location="{source}" latency=0 buffer-mode=auto drop-on-latency=true ! '
                         'rtph264depay ! h264parse ! '
-                        'nvv4l2decoder enable-max-performance=1 ! '
-                        'nvvidconv'
                     )
+                    if self.cuda_available:
+                        source_element += "nvv4l2decoder enable-max-performance=1 ! "
+                    else:
+                        source_element += "avdec_h264 ! "
+                        
                 elif source.startswith("http") and source.endswith((".mp4", ".mkv", ".avi")):
                     # HTTP video file
-                    source_element = f'souphttpsrc location="{source}" ! decodebin'
+                    source_element = f'souphttpsrc location="{source}" ! decodebin ! '
                 else:
                     # Generic streaming source
-                    source_element = f'uridecodebin uri="{source}"'
+                    source_element = f'uridecodebin uri="{source}" ! '
             
             elif source.isdigit() or source == "0":
                 # Local camera (V4L2)
-                source_element = f"v4l2src device=/dev/video{source} ! video/x-raw, width=640, height=480, framerate=30/1"
+                source_element = f"v4l2src device=/dev/video{source} ! video/x-raw, width=640, height=480, framerate=30/1 ! "
             else:
                 # Try one more time to handle RTSP URLs that may have formatting issues
                 if isinstance(source, str) and "rtsp://" in source:
+                    # Extract the RTSP URL part
                     rtsp_part = source[source.find("rtsp://"):]
                     end_markers = [" ", '"', "'"]
                     for marker in end_markers:
@@ -170,20 +176,21 @@ class InputStream:
                     source_element = (
                         f'rtspsrc location="{rtsp_part}" latency=0 buffer-mode=auto drop-on-latency=true ! '
                         'rtph264depay ! h264parse ! '
-                        'nvv4l2decoder enable-max-performance=1 ! '
-                        'nvvidconv'
                     )
+                    if self.cuda_available:
+                        source_element += "nvv4l2decoder enable-max-performance=1 ! "
+                    else:
+                        source_element += "avdec_h264 ! "
                 else:
                     # Unknown source type
                     logger.error(f"[CAMERA:{self.camera_id}] Unsupported source: {source}")
                     raise ValueError(f"Unsupported camera source: {source}")
             
-            # Build optimized DeepStream pipeline
+            # Build optimized DeepStream pipeline for RTSP
             pipeline_str = (
-                f"{source_element} ! "
-                f"video/x-raw, format=NV12, width={width}, height={height} ! "
-                f"videoconvert ! "
-                f"video/x-raw, format=BGR, width={width}, height={height} ! "
+                f"{source_element} "
+                f"nvvidconv ! video/x-raw,format=NV12,width={width},height={height} ! "
+                f"videoconvert ! video/x-raw,format=BGR ! "
                 f"appsink name=appsink max-buffers=1 drop=true sync=false emit-signals=true"
             )
             
@@ -486,8 +493,6 @@ class InputStream:
         self._thread_initialized.clear()
         
         # Create and start main loop thread
-       
-
         self.mainloop_thread = threading.Thread(
             target=self._glib_mainloop_thread,
             name=f"Camera-{self.camera_id}-GLib-Thread",
