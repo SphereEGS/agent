@@ -84,7 +84,7 @@ class VehicleTracker:
             self.last_activity_time = 0  # Last time activity was detected
             self.cooldown_period = 5  # Seconds to wait after no activity before stopping processing
             self.idle_timeout = 30  # Seconds without activity before resetting background model
-            self.frame_skip = 3  # Process only every Nth frame when in idle mode
+            self.frame_skip = 1  # Process only every Nth frame when in idle mode
             self.frame_counter = 0  # Counter for frame skipping
             self.pixel_diff_threshold = 15  # Minimum threshold for pixel-based changes
             self.area_diff_threshold = 0.03  # Percentage of frame that needs to change
