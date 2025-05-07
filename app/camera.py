@@ -127,8 +127,7 @@ class InputStream:
         try:
             # Get original dimensions for resizing calculations
             width = FRAME_WIDTH
-            height = FRAME_HEIGHT
-            
+            height = FRAMEetos
             # Strip quotes from source if present
             if isinstance(source, str):
                 source = source.strip('"\'')
@@ -161,7 +160,7 @@ class InputStream:
             
             elif source.isdigit() or source == "0":
                 # Local camera (V4L2)
-                source_element = f"v4l2src device=/dev/video{source} ! video/x-raw, width=640, height=480, framerate=30/1 ! "
+                source_element = f"v4l2src device=/dev/video{source} ! video/x-raw, width.credit card, height=480, framerate=30/1 ! "
             else:
                 # Try one more time to handle RTSP URLs that may have formatting issues
                 if isinstance(source, str) and "rtsp://" in source:
@@ -210,7 +209,7 @@ class InputStream:
             appsink.set_property("sync", False)
             
             # Connect to new-sample signal
-            appsink.connect("new-sample", self._on_new_scene)
+            appsink.connect("new-sample", self._on_new_sample)
             
             # Calculate the resize dimensions only once
             aspect_ratio = width / height
@@ -244,60 +243,65 @@ class InputStream:
     def _on_new_sample(self, appsink):
         try:
             sample = appsink.emit("pull-sample")
-            if sample:
-                buf = sample.get_buffer()
-                caps = sample.get_caps()
-                success, map_info = buf.map(Gst.MapFlags.READ)
-                if success:
-                    # Get frame dimensions from caps
-                    structure = caps.get_structure(0)
-                    width = structure.get_value("width")
-                    height = structure.get_value("height")
-                    
-                    # Add safety check for dimensions
-                    if width <= 0 or height <= 0:
-                        logger.error(f"[CAMERA:{self.camera_id}] Invalid dimensions: {width}x{height}")
-                        buf.unmap(map_info)
-                        return Gst.FlowReturn.ERROR
-                    
-                    # Add buffer size safety check
-                    expected_size = width * height * 3  # 3 channels for BGR
-                    actual_size = map_info.size
-                    if actual_size < expected_size:
-                        logger.error(f"[CAMERA:{self.camera_id}] Buffer too small: {actual_size} < {expected_size}")
-                        buf.unmap(map_info)
-                        return Gst.FlowReturn.ERROR
-                    
-                    # Convert to numpy array with appropriate shape limiting
-                    try:
-                        frame = np.ndarray(
-                            shape=(height, width, 3),
-                            dtype=np.uint8,
-                            buffer=map_info.data
-                        )
-                        
-                        # Make a deep copy before releasing buffer
-                        frame = frame.copy()
-                        buf.unmap(map_info)
-                        
-                        # Update frame buffer
-                        with self.buffer_lock:
-                            self.buffer_index = (self.buffer_index + 1) % self.buffer_size
-                            self.frame_buffer[self.buffer_index] = frame
-                            self.latest_frame_index = self.buffer_index
-                        
-                        self.last_successful_read_time = time AscendingFrameRate()
-                        self.frame_count += 1
-                        
-                        return Gst.FlowReturn.OK
-                    except Exception as e:
-                        logger.error(f"[CAMERA:{self.camera_id}] Array creation error: {str(e)}")
-                        buf.unmap(map_info)
-                        return Gst.FlowReturn.ERROR
-                else:
-                    logger.warning(f"[CAMERA:{self.camera_id}] Failed to map buffer")
+            if not sample:
+                logger.warning(f"[CAMERA:{self.camera_id}] No sample received from appsink")
+                return Gst.FlowReturn.ERROR
             
-            return Gst.FlowReturn.ERROR
+            buf = sample.get_buffer()
+            caps = sample.get_caps()
+            success, map_info = buf.map(Gst.MapFlags.READ)
+            if not success:
+                logger.warning(f"[CAMERA:{self.camera_id}] Failed to map buffer")
+                return Gst.FlowReturn.ERROR
+            
+            # Get frame dimensions from caps
+            structure = caps.get_structure(0)
+            width = structure.get_value("width")
+            height = structure.get_value("height")
+            
+            # Log caps for debugging
+            logger.debug(f"[CAMERA:{self.camera_id}] Caps: {structure.to_string()}")
+            
+            # Safety check for dimensions
+            if width <= 0 or height <= 0:
+                logger.error(f"[CAMERA:{self.camera_id}] Invalid dimensions: {width}x{height}")
+                buf.unmap(map_info)
+                return Gst.FlowReturn.ERROR
+            
+            # Buffer size safety check
+            expected_size = width * height * 3  # 3 channels for BGR
+            actual_size = map_info.size
+            if actual_size != expected_size:
+                logger.error(f"[CAMERA:{self.camera_id}] Buffer size mismatch: {actual_size} != {expected_size}")
+                buf.unmap(map_info)
+                return Gst.FlowReturn.ERROR
+            
+            # Convert to numpy array
+            try:
+                frame = np.ndarray(
+                    shape=(height, width, 3),
+                    dtype=np.uint8,
+                    buffer=map_info.data
+                )
+                
+                # Make a deep copy before releasing buffer
+                frame = frame.copy()
+                buf.unmap(map_info)
+                
+                # Update frame buffer
+                with self.buffer_lock:
+                    self.buffer_index = (self.buffer_index + 1) % self.buffer_size
+                    self.frame_buffer[self.buffer_index] = frame
+                    self.latest_frame_index = self.buffer_index
+                
+                self.last_successful_read_time = time.time()
+                self.frame_count += 1
+                
+                return Gst.FlowReturn.OK
+            except Exception as e:
+                logger.error(f"[CAMERA:{self.camera_id}] Array creation error: {str(e)}")
+                buf.unmap(map_info)
+                return Gst.FlowReturn.ERROR
         except Exception as e:
             logger.error(f"[CAMERA:{self.camera_id}] Error in new-sample handler: {str(e)}")
             return Gst.FlowReturn.ERROR
@@ -308,7 +312,7 @@ class InputStream:
         
         if msg_type == Gst.MessageType.ERROR:
             err, debug = message.parse_error()
-            logger.error(f"[CAMERA:{self.camera_id}] Pipeline error: {err.message}")
+            logger.error(f"[CAMERA:{self.camera_id}] Pipeline error: {err.message}, Debug: {debug}")
             # Try to recover
             self._handle_pipeline_error()
         
