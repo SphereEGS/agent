@@ -1022,3 +1022,35 @@ class VehicleTracker:
     def get_detected_plate(self, track_id):
         """Get the detected plate for a specific vehicle ID"""
         return self.detected_plates.get(track_id, None)
+        
+    def cleanup(self):
+        """Properly cleanup GStreamer resources on shutdown"""
+        try:
+            logger.info(f"[TRACKER:{self.camera_id}] Cleaning up resources")
+            
+            # Cleanup GStreamer pipeline if it exists
+            if hasattr(self, 'display_pipeline') and self.display_pipeline is not None:
+                logger.info(f"[TRACKER:{self.camera_id}] Stopping GStreamer display pipeline")
+                # Send EOS to pipeline
+                if hasattr(self, 'appsrc') and self.appsrc is not None:
+                    try:
+                        self.appsrc.emit('end-of-stream')
+                        logger.debug(f"[TRACKER:{self.camera_id}] Sent EOS to appsrc")
+                    except Exception as e:
+                        logger.warning(f"[TRACKER:{self.camera_id}] Error sending EOS: {str(e)}")
+                
+                # Stop pipeline
+                try:
+                    self.display_pipeline.set_state(Gst.State.NULL)
+                    logger.debug(f"[TRACKER:{self.camera_id}] Pipeline state set to NULL")
+                except Exception as e:
+                    logger.warning(f"[TRACKER:{self.camera_id}] Error setting pipeline state to NULL: {str(e)}")
+                
+                # Clear references
+                self.display_pipeline = None
+                self.appsrc = None
+                logger.info(f"[TRACKER:{self.camera_id}] GStreamer resources released")
+                
+            logger.info(f"[TRACKER:{self.camera_id}] Cleanup completed")
+        except Exception as e:
+            logger.error(f"[TRACKER:{self.camera_id}] Error during cleanup: {str(e)}")
