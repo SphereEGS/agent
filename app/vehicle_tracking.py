@@ -629,14 +629,46 @@ class VehicleTracker:
             # Display the visualization frame in a camera-specific window
             window_name = f'Detections - {self.camera_id}'
             
-            # Resize the visualization frame to make it larger
-            display_scale = 1.5  # Increase this value to make the frame larger
-            display_width = int(vis_frame.shape[1] * display_scale)
-            display_height = int(vis_frame.shape[0] * display_scale)
-            display_frame = cv2.resize(vis_frame, (display_width, display_height))
-            
-            cv2.imshow(window_name, display_frame)
-            cv2.waitKey(1)
+            # Make sure we have a valid frame before resizing and displaying
+            if vis_frame is not None and vis_frame.size > 0:
+                try:
+                    # Check frame dimensions and add debugging info
+                    h, w = vis_frame.shape[:2]
+                    logger.debug(f"[TRACKER:{self.camera_id}] Frame size before resize: {w}x{h}")
+                    
+                    # Resize the visualization frame to make it larger
+                    display_scale = 1.75  # Increased for better visibility
+                    display_width = int(w * display_scale)
+                    display_height = int(h * display_scale)
+                    
+                    # Use INTER_LINEAR for better quality when upscaling
+                    display_frame = cv2.resize(vis_frame, (display_width, display_height), 
+                                              interpolation=cv2.INTER_LINEAR)
+                    
+                    # Draw a border around the frame to make it more visible
+                    cv2.rectangle(display_frame, (0, 0), (display_width-1, display_height-1), 
+                                 (0, 255, 255), 2)
+                    
+                    # Show frame dimension on display for debugging
+                    cv2.putText(display_frame, f"Size: {display_width}x{display_height}", 
+                               (10, display_height-80), cv2.FONT_HERSHEY_SIMPLEX, 
+                               0.5, (255, 255, 255), 1)
+                    
+                    # Display the frame
+                    cv2.imshow(window_name, display_frame)
+                    cv2.waitKey(1)  # Allow window to refresh
+                    
+                    logger.debug(f"[TRACKER:{self.camera_id}] Displayed frame with size: {display_width}x{display_height}")
+                except Exception as e:
+                    logger.error(f"[TRACKER:{self.camera_id}] Error displaying frame: {str(e)}")
+            else:
+                logger.warning(f"[TRACKER:{self.camera_id}] Cannot display invalid or empty frame")
+                # Display an information frame when the real frame is invalid
+                info_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                cv2.putText(info_frame, f"No valid frame - Camera {self.camera_id}", 
+                           (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                cv2.imshow(window_name, info_frame)
+                cv2.waitKey(1)
             
             # Return the original visualization frame
             return True, vis_frame
