@@ -1,10 +1,8 @@
-import cv2
 import os
 import time
 import threading
 import numpy as np
 import gi
-import logging
 from .config import CAMERA_URLS, CAMERA_URL, logger, ALLOW_FALLBACK, FRAME_WIDTH, FRAME_HEIGHT
 
 # Required GStreamer imports for DeepStream
@@ -143,15 +141,12 @@ class InputStream:
                 # Streaming source (RTSP/RTMP/HTTP)
                 if source.startswith("rtsp://"):
                     # RTSP-specific optimized pipeline for DeepStream
-                    # FIX: Properly quote the URL and avoid using it directly in the pipeline string
-                    source_element = f'rtspsrc location="{source}" latency=0 buffer-mode=auto drop-on-latency=true ! '
-                    source_element += 'rtph264depay ! h264parse ! '
-                    # Add hardware decoding if CUDA is available
-                    if self.cuda_available:
-                        source_element += "nvv4l2decoder enable-max-performance=1 ! nvvidconv"
-                    else:
-                        source_element += "avdec_h264 ! videoconvert"
-                        
+                    source_element = (
+                        f'rtspsrc location="{source}" latency=0 buffer-mode=auto drop-on-latency=true ! '
+                        'rtph264depay ! h264parse ! '
+                        'nvv4l2decoder enable-max-performance=1 ! '
+                        'nvvidconv'
+                    )
                 elif source.startswith("http") and source.endswith((".mp4", ".mkv", ".avi")):
                     # HTTP video file
                     source_element = f'souphttpsrc location="{source}" ! decodebin'
@@ -165,7 +160,6 @@ class InputStream:
             else:
                 # Try one more time to handle RTSP URLs that may have formatting issues
                 if isinstance(source, str) and "rtsp://" in source:
-                    # Extract the RTSP URL part
                     rtsp_part = source[source.find("rtsp://"):]
                     end_markers = [" ", '"', "'"]
                     for marker in end_markers:
@@ -173,12 +167,12 @@ class InputStream:
                             rtsp_part = rtsp_part[:rtsp_part.find(marker)]
                     
                     logger.warning(f"[CAMERA:{self.camera_id}] Attempting to parse malformed RTSP URL: {rtsp_part}")
-                    source_element = f'rtspsrc location="{rtsp_part}" latency=0 buffer-mode=auto drop-on-latency=true ! '
-                    source_element += 'rtph264depay ! h264parse ! '
-                    if self.cuda_available:
-                        source_element += "nvv4l2decoder enable-max-performance=1 ! nvvidconv"
-                    else:
-                        source_element += "avdec_h264 ! videoconvert"
+                    source_element = (
+                        f'rtspsrc location="{rtsp_part}" latency=0 buffer-mode=auto drop-on-latency=true ! '
+                        'rtph264depay ! h264parse ! '
+                        'nvv4l2decoder enable-max-performance=1 ! '
+                        'nvvidconv'
+                    )
                 else:
                     # Unknown source type
                     logger.error(f"[CAMERA:{self.camera_id}] Unsupported source: {source}")
@@ -187,13 +181,10 @@ class InputStream:
             # Build optimized DeepStream pipeline
             pipeline_str = (
                 f"{source_element} ! "
-                f"nvvidconv ! "  # NVIDIA video converter
-                f"video/x-raw(memory:NVMM), width={width}, height={height}, format=NV12 ! "  # NVIDIA memory format
-                f"nvvidconv ! "  # Another converter for format conversion
-                f"video/x-raw, width={width}, height={height}, format=BGRx ! "  # Format that's compatible with OpenCV
-                f"videoconvert ! "  # Convert to BGR for OpenCV
-                f"video/x-raw, width={width}, height={height}, format=BGR ! "  # Final format for OpenCV
-                f"appsink name=appsink max-buffers=1 drop=true sync=false emit-signals=true"  # Output to our app
+                f"video/x-raw, format=NV12, width={width}, height={height} ! "
+                f"videoconvert ! "
+                f"video/x-raw, format=BGR, width={width}, height={height} ! "
+                f"appsink name=appsink max-buffers=1 drop=true sync=false emit-signals=true"
             )
             
             logger.info(f"[CAMERA:{self.camera_id}] Creating DeepStream pipeline")
@@ -495,6 +486,8 @@ class InputStream:
         self._thread_initialized.clear()
         
         # Create and start main loop thread
+       
+
         self.mainloop_thread = threading.Thread(
             target=self._glib_mainloop_thread,
             name=f"Camera-{self.camera_id}-GLib-Thread",
