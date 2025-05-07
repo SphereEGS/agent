@@ -188,11 +188,11 @@ class InputStream:
             pipeline_str = (
                 f"{source_element} ! "
                 f"nvvidconv ! "  # NVIDIA video converter
-                f"video/x-raw(memory:NVMM), format=NV12 ! "  # NVIDIA memory format
+                f"video/x-raw(memory:NVMM), width={width}, height={height}, format=NV12 ! "  # NVIDIA memory format
                 f"nvvidconv ! "  # Another converter for format conversion
-                f"video/x-raw, format=BGRx ! "  # Format that's compatible with OpenCV
+                f"video/x-raw, width={width}, height={height}, format=BGRx ! "  # Format that's compatible with OpenCV
                 f"videoconvert ! "  # Convert to BGR for OpenCV
-                f"video/x-raw, format=BGR ! "  # Final format for OpenCV
+                f"video/x-raw, width={width}, height={height}, format=BGR ! "  # Final format for OpenCV
                 f"appsink name=appsink max-buffers=1 drop=true sync=false emit-signals=true"  # Output to our app
             )
             
