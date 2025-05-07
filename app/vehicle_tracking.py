@@ -872,16 +872,16 @@ class VehicleTracker:
                     # Use standard OpenCV display
                     window_name = f'Detections - {self.camera_id}'
                     logger.info(f"[TRACKER:{self.camera_id}] Using OpenCV display with window name: {window_name}")
-                    # Make sure window exists and is set to NORMAL mode
-                    if not cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE):
-                        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-                        cv2.setWindowProperty(window_name, cv2.WND_PROP_ASPECT_RATIO, cv2.WINDOW_KEEPRATIO)
-                        # Set a default size that's large enough to show details
-                        cv2.resizeWindow(window_name, 1280, 720)
+                    
+                    # Create/configure window properly for Jetson
+                    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                    
+                    # Set window properties for better display
+                    h, w = vis_frame.shape[:2]
+                    cv2.resizeWindow(window_name, w, h)
                     
                     # Display the frame
                     cv2.imshow(window_name, vis_frame)
-                    # Ensure the window is updated
                     cv2.waitKey(1) # This needs to be called to actually display the window
                     logger.info(f"[TRACKER:{self.camera_id}] OpenCV window should be visible now")
             except Exception as e:

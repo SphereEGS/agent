@@ -305,11 +305,16 @@ class SpherexAgent:
                 window_name = f'Detections - {camera_id}'
                 logger.info(f"[AGENT] Creating named window for {camera_id}: {window_name}")
                 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-                # Set window properties to ensure it displays fully
-                cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
-                cv2.setWindowProperty(window_name, cv2.WND_PROP_ASPECT_RATIO, cv2.WINDOW_KEEPRATIO)
-                # Start with a reasonably large size
+                
+                # Set proper initial window size for Jetson display
+                # Default to 1280x720 for initial size, will be adjusted with actual frames later
                 cv2.resizeWindow(window_name, 1280, 720)
+                
+                # Move windows to prevent overlapping (offset each window)
+                window_index = list(self.camera_manager.get_camera_ids()).index(camera_id)
+                x_pos = 50 + (window_index * 30)  # Offset each window a bit
+                y_pos = 50 + (window_index * 30)
+                cv2.moveWindow(window_name, x_pos, y_pos)
                 
             # Start a thread for each camera
             threads = []
