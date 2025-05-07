@@ -1,6 +1,8 @@
 import os
 from datetime import datetime
 from time import sleep, time
+import signal
+import sys
 
 import cv2
 import requests
@@ -46,10 +48,26 @@ class CameraManager:
     def read_frame(self, camera_id):
         """Read a frame from a specific camera"""
         if camera_id in self.streams:
-            ret, frame = self.streams[camera_id].read()
-            if ret:
-                self.frame_counts[camera_id] += 1
-            return ret, frame, self.frame_counts[camera_id]
+            try:
+                ret, frame = self.streams[camera_id].read()
+                if ret:
+                    self.frame_counts[camera_id] += 1
+                    return ret, frame, self.frame_counts[camera_id]
+                else:
+                    logger.warning(f"[MANAGER] Failed to read frame from camera {camera_id}")
+                    return False, None, self.frame_counts[camera_id]
+            except Exception as e:
+                logger.error(f"[MANAGER] Error reading from camera {camera_id}: {e}")
+                # After encountering an error, try to reset the stream
+                try:
+                    logger.info(f"[MANAGER] Attempting to reset camera {camera_id}")
+                    self.streams[camera_id].release()
+                    sleep(1.0)  # Wait before reconnecting
+                    self.streams[camera_id] = InputStream(camera_id)
+                    logger.info(f"[MANAGER] Successfully reset camera {camera_id}")
+                except Exception as reset_e:
+                    logger.error(f"[MANAGER] Failed to reset camera {camera_id}: {reset_e}")
+                return False, None, self.frame_counts[camera_id]
         return False, None, 0
     
     def release_all(self):
@@ -86,6 +104,14 @@ class SpherexAgent:
         
         # Flag to indicate if the system should continue running
         self.is_running = True
+        
+        # Set up signal handler for graceful shutdown on Ctrl+C
+        signal.signal(signal.SIGINT, self.signal_handler)
+
+    def signal_handler(self, sig, frame):
+        """Handle Ctrl+C (SIGINT) signal gracefully"""
+        logger.info("[AGENT] SIGINT received, shutting down gracefully...")
+        self.is_running = False
 
     def initialize_streams(self):
         """Initialize all camera streams"""
@@ -151,126 +177,142 @@ class SpherexAgent:
             logger.warning(f"[AGENT:{camera_id}] Received None frame, skipping processing")
             return
 
-        # Create a working copy of the frame for visualization
-        display_frame = frame.copy()
+        try:
+            # Create a working copy of the frame for visualization
+            display_frame = frame.copy()
 
-        # Add frame counter and camera ID to display
-        cv2.putText(
-            display_frame,
-            f"Frame: {frame_count} - Camera: {camera_id}",
-            (10, 30),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1,
-            (0, 255, 0),
-            2,
-        )
+            # Add frame counter and camera ID to display
+            cv2.putText(
+                display_frame,
+                f"Frame: {frame_count} - Camera: {camera_id}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                1,
+                (0, 255, 0),
+                2,
+            )
 
-        # Skip frames based on PROCESS_EVERY setting but always display
-        if frame_count % PROCESS_EVERY == 0:
-            # Check cooldown period
-            current_time = time()
-            time_since_last = current_time - self.last_detection_time
+            # Skip frames based on PROCESS_EVERY setting but always display
+            if frame_count % PROCESS_EVERY == 0:
+                # Check cooldown period
+                current_time = time()
+                time_since_last = current_time - self.last_detection_time
 
-            if time_since_last > self.detection_cooldown:
-                logger.debug(
-                    f"[AGENT:{camera_id}] Running detection on frame {frame_count}"
-                )
-                try:
-                    # Get the tracker for this camera
-                    tracker = self.camera_manager.trackers[camera_id]
-                    
-                    # Store the previous count of detected plates
-                    prev_plate_count = len(tracker.detected_plates)
-                    prev_plates = set(tracker.detected_plates.items())
+                if time_since_last > self.detection_cooldown:
+                    logger.debug(
+                        f"[AGENT:{camera_id}] Running detection on frame {frame_count}"
+                    )
+                    try:
+                        # Get the tracker for this camera
+                        tracker = self.camera_manager.trackers[camera_id]
+                        
+                        # Store the previous count of detected plates
+                        prev_plate_count = len(tracker.detected_plates)
+                        prev_plates = set(tracker.detected_plates.items())
 
-                    # Detect vehicles and license plates
-                    detected, vis_frame = tracker.detect_vehicles(frame)
+                        # Detect vehicles and license plates
+                        detected, vis_frame = tracker.detect_vehicles(frame)
 
-                    if detected and vis_frame is not None:
-                        # Use the visualization frame that comes from the tracker
-                        display_frame = vis_frame
+                        if detected and vis_frame is not None:
+                            # Use the visualization frame that comes from the tracker
+                            display_frame = vis_frame
 
-                        # Only log plate info if there's a change in detected plates
-                        curr_plates = set(tracker.detected_plates.items())
-                        new_plates = curr_plates - prev_plates
+                            # Only log plate info if there's a change in detected plates
+                            curr_plates = set(tracker.detected_plates.items())
+                            new_plates = curr_plates - prev_plates
 
-                        if new_plates:
-                            logger.info(
-                                f"[AGENT:{camera_id}] Newly detected plates: {dict(new_plates)}"
-                            )
-
-                            # Process newly detected plates
-                            for track_id, plate_text in new_plates:
-                                # Check if plate is authorized
-                                is_authorized = self.cache.is_authorized(
-                                    plate_text
-                                )
-                                timestamp = datetime.now().strftime(
-                                    "%Y-%m-%d %H:%M:%S"
-                                )
-
-                                # Update the authorization status for display
-                                # Make sure the vehicle tracker's last recognized plate is updated
-                                tracker.last_recognized_plate = plate_text
-                                tracker.last_plate_authorized = is_authorized
+                            if new_plates:
                                 logger.info(
-                                    f"[AGENT:{camera_id}] Updated last_recognized_plate to {plate_text}, auth: {is_authorized}"
+                                    f"[AGENT:{camera_id}] Newly detected plates: {dict(new_plates)}"
                                 )
 
-                                # Log the detection
-                                auth_status = (
-                                    "Authorized"
-                                    if is_authorized
-                                    else "Not Authorized"
-                                )
-                                logger.info(
-                                    f"[AGENT:{camera_id}] [{timestamp}] Vehicle {track_id} with plate: {plate_text} - {auth_status}"
-                                )
-
-                                # Handle gate control
-                                if is_authorized:
-                                    logger.info(
-                                        f"[GATE] Opening gate for authorized plate: {plate_text} detected by camera {camera_id}"
+                                # Process newly detected plates
+                                for track_id, plate_text in new_plates:
+                                    # Check if plate is authorized
+                                    is_authorized = self.cache.is_authorized(
+                                        plate_text
                                     )
-                                    cam_type = CAMERA_TYPES.get(camera_id, "Entry")
-                                    if cam_type.lower() == "entry":
-                                        self.gate.open_entry()
-                                        sleep(5)  # Allow time for gate to open
-                                        self.gate.close_entry()
-                                    elif cam_type.lower() == "exit":
-                                        self.gate.open_exit()
-                                        sleep(5)
-                                        self.gate.close_exit()
+                                    timestamp = datetime.now().strftime(
+                                        "%Y-%m-%d %H:%M:%S"
+                                    )
+
+                                    # Update the authorization status for display
+                                    # Make sure the vehicle tracker's last recognized plate is updated
+                                    tracker.last_recognized_plate = plate_text
+                                    tracker.last_plate_authorized = is_authorized
+                                    logger.info(
+                                        f"[AGENT:{camera_id}] Updated last_recognized_plate to {plate_text}, auth: {is_authorized}"
+                                    )
+
+                                    # Log the detection
+                                    auth_status = (
+                                        "Authorized"
+                                        if is_authorized
+                                        else "Not Authorized"
+                                    )
+                                    logger.info(
+                                        f"[AGENT:{camera_id}] [{timestamp}] Vehicle {track_id} with plate: {plate_text} - {auth_status}"
+                                    )
+
+                                    # Handle gate control
+                                    if is_authorized:
+                                        logger.info(
+                                            f"[GATE] Opening gate for authorized plate: {plate_text} detected by camera {camera_id}"
+                                        )
+                                        cam_type = CAMERA_TYPES.get(camera_id, "Entry")
+                                        if cam_type.lower() == "entry":
+                                            self.gate.open_entry()
+                                            sleep(5)  # Allow time for gate to open
+                                            self.gate.close_entry()
+                                        elif cam_type.lower() == "exit":
+                                            self.gate.open_exit()
+                                            sleep(5)
+                                            self.gate.close_exit()
+                                        else:
+                                            logger.warning(f"Unknown camera type '{cam_type}' for camera {camera_id}, defaulting to entry barrier")
+                                            self.gate.open_entry()
+                                        self.log_gate_entry(plate_text, vis_frame, 1, camera_id)
+                                        self.last_detection_time = current_time
                                     else:
-                                        logger.warning(f"Unknown camera type '{cam_type}' for camera {camera_id}, defaulting to entry barrier")
-                                        self.gate.open_entry()
-                                    self.log_gate_entry(plate_text, vis_frame, 1, camera_id)
-                                    self.last_detection_time = current_time
-                                else:
-                                    logger.info(
-                                        f"[GATE] Not opening gate for unauthorized plate: {plate_text} detected by camera {camera_id}"
-                                    )
-                                    self.log_gate_entry(plate_text, vis_frame, 0, camera_id)
-                                    self.is_logged = True
-                        elif frame_count % 200 == 0:
-                            # Log total plate count periodically
-                            plates = tracker.detected_plates
-                            logger.info(
-                                f"[AGENT:{camera_id}] Total plates detected: {len(plates)}"
-                            )
-                    elif vis_frame is not None:
-                        # Even if no detection, use the visualization frame which should have ROI
-                        display_frame = vis_frame
-                        if (
-                            frame_count % 50 == 0
-                        ):  # Less frequent logging for no detections
-                            logger.debug(
-                                f"[AGENT:{camera_id}] No vehicle detections in frame {frame_count}"
-                            )
+                                        logger.info(
+                                            f"[GATE] Not opening gate for unauthorized plate: {plate_text} detected by camera {camera_id}"
+                                        )
+                                        self.log_gate_entry(plate_text, vis_frame, 0, camera_id)
+                                        self.is_logged = True
+                            elif frame_count % 200 == 0:
+                                # Log total plate count periodically
+                                plates = tracker.detected_plates
+                                logger.info(
+                                    f"[AGENT:{camera_id}] Total plates detected: {len(plates)}"
+                                )
+                        elif vis_frame is not None:
+                            # Even if no detection, use the visualization frame which should have ROI
+                            display_frame = vis_frame
+                            if (
+                                frame_count % 50 == 0
+                            ):  # Less frequent logging for no detections
+                                logger.debug(
+                                    f"[AGENT:{camera_id}] No vehicle detections in frame {frame_count}"
+                                )
 
-                except Exception as e:
-                    logger.error(f"[AGENT:{camera_id}] Frame processing error: {e}")
-                    
+                    except Exception as e:
+                        logger.error(f"[AGENT:{camera_id}] Frame processing error: {e}")
+                
+            # Display the frame - only attempt if windows are created
+            try:
+                window_name = f'Detections - {camera_id}'
+                cv2.imshow(window_name, display_frame)
+            except Exception as e:
+                # If window display fails, log it but continue processing
+                if frame_count % 100 == 0:  # Limit log frequency
+                    logger.debug(f"[AGENT:{camera_id}] Failed to display frame: {e}")
+        
+        except Exception as e:
+            # Catch any other exceptions in the frame processing
+            logger.error(f"[AGENT:{camera_id}] Critical error processing frame: {e}")
+            # Pause briefly to avoid tight error loops
+            sleep(0.1)
+
     def process_camera(self, camera_id):
         """Process frames from a specific camera in a continuous loop"""
         logger.info(f"[AGENT] Starting processing loop for camera {camera_id}")
@@ -295,16 +337,23 @@ class SpherexAgent:
             return
 
         logger.info(
-            f"[AGENT] Starting video processing for {len(self.camera_manager.get_camera_ids())} cameras... Press 'q' to stop the program"
+            f"[AGENT] Starting video processing for {len(self.camera_manager.get_camera_ids())} cameras... Press 'q' to stop the program or Ctrl+C"
         )
 
         try:
-            # Create a named window for each camera first in the main thread
-            # This helps ensure windows are properly created before threads try to use them
-            for camera_id in self.camera_manager.get_camera_ids():
-                window_name = f'Detections - {camera_id}'
-                logger.info(f"[AGENT] Creating named window for {camera_id}: {window_name}")
-                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            # Flag to track if we're running in headless mode
+            headless_mode = False
+            
+            try:
+                # Create a named window for each camera first in the main thread
+                # This helps ensure windows are properly created before threads try to use them
+                for camera_id in self.camera_manager.get_camera_ids():
+                    window_name = f'Detections - {camera_id}'
+                    logger.info(f"[AGENT] Creating named window for {camera_id}: {window_name}")
+                    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+            except Exception as e:
+                logger.warning(f"[AGENT] Failed to create windows: {e}. Running in headless mode.")
+                headless_mode = True
                 
             # Start a thread for each camera
             threads = []
@@ -319,32 +368,46 @@ class SpherexAgent:
                 
             # Main thread monitors keypresses for exiting
             logger.info("[AGENT] Main thread monitoring for keypresses. Windows should be visible now.")
-            logger.info("[AGENT] If no windows appear, check for X11/display errors.")
+            if headless_mode:
+                logger.info("[AGENT] Running in headless mode due to window creation failure.")
+            else:
+                logger.info("[AGENT] If no windows appear, check for X11/display errors.")
+            logger.info("[AGENT] Press 'q' or Ctrl+C to exit gracefully")
+            
             empty_frame_cycle = 0
             while self.is_running:
-                key = cv2.waitKey(100) & 0xFF  # Increased wait time for better key detection
-                
-                # Allow quitting with 'q' key
-                if key == ord("q"):
-                    logger.info("[AGENT] User pressed 'q', exiting")
-                    self.is_running = False
-                    break
-                
-                # Periodically call imshow in main thread to ensure windows stay responsive
-                empty_frame_cycle += 1
-                if empty_frame_cycle >= 10:  # Every ~1 second
-                    empty_frame_cycle = 0
-                    # Display a small empty frame for each window to keep it responsive
-                    for camera_id in self.camera_manager.get_camera_ids():
-                        try:
-                            window_name = f'Detections - {camera_id}'
-                            # Get the last frame if any
-                            small_frame = np.zeros((100, 100, 3), dtype=np.uint8)
-                            cv2.putText(small_frame, "Waiting...", (10, 50), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                            cv2.imshow(window_name, small_frame)
-                        except Exception as e:
-                            logger.warning(f"[AGENT] Error refreshing window {window_name}: {e}")
+                try:
+                    # Skip window operations in headless mode
+                    if not headless_mode:
+                        key = cv2.waitKey(100) & 0xFF  # Increased wait time for better key detection
+                        
+                        # Allow quitting with 'q' key
+                        if key == ord("q"):
+                            logger.info("[AGENT] User pressed 'q', exiting")
+                            self.is_running = False
+                            break
+                        
+                        # Periodically call imshow in main thread to ensure windows stay responsive
+                        empty_frame_cycle += 1
+                        if empty_frame_cycle >= 10:  # Every ~1 second
+                            empty_frame_cycle = 0
+                            # Display a small empty frame for each window to keep it responsive
+                            for camera_id in self.camera_manager.get_camera_ids():
+                                try:
+                                    window_name = f'Detections - {camera_id}'
+                                    # Get the last frame if any
+                                    small_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+                                    cv2.putText(small_frame, "Waiting...", (10, 50), 
+                                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                                    cv2.imshow(window_name, small_frame)
+                                except Exception as e:
+                                    logger.warning(f"[AGENT] Error refreshing window {window_name}: {e}")
+                    else:
+                        # In headless mode, just sleep to allow signal handlers to work
+                        sleep(1.0)
+                except Exception as e:
+                    logger.warning(f"[AGENT] Error in main loop: {e}, continuing...")
+                    sleep(1.0)
                 
                 sleep(0.1)  # Reduce CPU usage in main thread
 
@@ -365,7 +428,12 @@ class SpherexAgent:
                 
             # Release all cameras
             self.camera_manager.release_all()
-            cv2.destroyAllWindows()
+            
+            try:
+                cv2.destroyAllWindows()
+            except Exception as e:
+                logger.warning(f"[AGENT] Error destroying windows: {e}")
+                
             logger.info("[AGENT] SpherexAgent shutdown complete")
 
 
