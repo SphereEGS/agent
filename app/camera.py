@@ -2,49 +2,24 @@ import cv2
 import os
 import time
 import threading
+import queue
 import numpy as np
-import gi
-import logging
 from .config import CAMERA_URLS, CAMERA_URL, logger, ALLOW_FALLBACK, FRAME_WIDTH, FRAME_HEIGHT
-
-# Required GStreamer imports for DeepStream
-try:
-    gi.require_version('Gst', '1.0')
-    from gi.repository import Gst, GLib
-except Exception as e:
-    logger.error(f"Failed to import GStreamer: {str(e)}")
-    logger.error("Make sure DeepStream SDK is installed properly")
-    raise ImportError(f"DeepStream dependencies not satisfied: {str(e)}")
 
 class InputStream:
     """
     High-performance camera class optimized for minimal-latency video streaming
-    with NVIDIA DeepStream acceleration for Jetson Nano.
+    with RTSP acceleration and pipeline optimizations for real-time processing.
     """
 
     def __init__(self, camera_id="main"):
         """
-        Initialize DeepStream-accelerated camera with the configured input source
+        Initialize optimized camera with the configured input source
         
         Args:
             camera_id (str): The ID of the camera to use (default: "main")
         """
-        # Initialize GStreamer
-        Gst.init(None)
-        
-        # Check CUDA availability for optimizations
-        self.cuda_available = False
-        try:
-            # Attempt to detect CUDA/GPU availability on Jetson
-            if os.path.exists('/dev/nvhost-ctrl'):
-                self.cuda_available = True
-                logger.info(f"[CAMERA:{camera_id}] CUDA acceleration available")
-            elif os.path.exists('/usr/local/cuda'):
-                self.cuda_available = True
-                logger.info(f"[CAMERA:{camera_id}] CUDA installation detected")
-        except Exception as e:
-            logger.warning(f"[CAMERA:{camera_id}] Error checking CUDA: {str(e)}")
-        
+        self.cap = None
         self.frame_count = 0
         self.last_frame = None
         self.source = None
@@ -53,30 +28,14 @@ class InputStream:
         self.last_successful_read_time = 0
         self.camera_id = camera_id
         
-        # DeepStream-specific attributes
-        self.pipeline = None
-        self.loop = None
-        self.bus = None
-        self.appsink = None
-        self.mainloop_thread = None
-        
-        # Hardware acceleration is always enabled with DeepStream
-        self.use_hw_accel = True
-        
         # Get the camera URL for the specified camera ID
         if camera_id in CAMERA_URLS:
             self.camera_url = CAMERA_URLS[camera_id]
-            # Strip quotes if present in the URL from config
-            if isinstance(self.camera_url, str):
-                self.camera_url = self.camera_url.strip('"\'')
         else:
             # Fallback to main camera if the specified ID is not found
             logger.warning(f"[CAMERA] Camera ID '{camera_id}' not found, using main camera")
             self.camera_id = "main"
             self.camera_url = CAMERA_URL  # For backward compatibility
-            # Strip quotes if present
-            if isinstance(self.camera_url, str):
-                self.camera_url = self.camera_url.strip('"\'')
         
         # Use a ring buffer instead of queue for lower latency
         self.buffer_size = 2  # Minimum buffer size to reduce latency
@@ -85,12 +44,15 @@ class InputStream:
         self.latest_frame_index = -1
         self.buffer_lock = threading.Lock()
         
-        # For thread management
+        # For threaded capture - optimized for minimal latency
         self.stop_event = threading.Event()
         self.capture_thread = None
         
         # Pre-allocated resize dimensions
         self.resize_dimensions = None
+        
+        # Pre-allocated resize memory buffer for zero-copy operations
+        self.resize_buffer = None
         
         # Error handling with fast recovery
         self.decode_errors = 0
@@ -101,112 +63,93 @@ class InputStream:
         # Thread sync
         self._thread_initialized = threading.Event()
         
-        # Set up CPU affinity for better performance
-        self._setup_cpu_affinity()
-        
-        # Initialize stream with DeepStream pipeline
-        logger.info(f"[CAMERA] Initializing DeepStream input stream for camera {self.camera_id} on Jetson Nano")
+        # Initialize stream with optimized settings
+        logger.info(f"[CAMERA] Initializing low-latency input stream for camera {self.camera_id}")
         self._connect_to_source()
         self._start_capture_thread()
     
-    def _setup_cpu_affinity(self):
-        """Set up CPU affinity for better performance on Jetson"""
+    def _connect_to_source(self):
+        """Connect to the video source with optimized pipeline settings"""
         try:
-            if os.name == 'posix':
-                # Use the last CPU core for camera thread to avoid competing with
-                # the main processing thread which will use the GPU
-                import multiprocessing
-                self.num_cpus = multiprocessing.cpu_count()
-                logger.info(f"[CAMERA:{self.camera_id}] System has {self.num_cpus} CPU cores")
-                # We'll set actual affinity when starting the thread
-        except Exception as e:
-            logger.warning(f"[CAMERA:{self.camera_id}] Could not determine CPU count: {str(e)}")
-    
-    def _create_deepstream_pipeline(self, source):
-        """Create a DeepStream pipeline optimized for Jetson Nano"""
-        try:
-            # Get original dimensions for resizing calculations
-            width = FRAME_WIDTH
-            height = FRAME_HEIGHT
+            # Clean the source string
+            source = self.camera_url.strip()
+            if source.startswith(('"', "'")):
+                source = source[1:-1]
+            if '#' in source:
+                source = source.split('#')[0].strip()
             
-            # Strip quotes from source if present
-            if isinstance(source, str):
-                source = source.strip('"\'')
+            logger.info(f"[CAMERA:{self.camera_id}] Connecting to: {source}")
             
-            # Determine the source type and build appropriate pipeline
-            if isinstance(source, str) and (
-                source.startswith("rtsp://") or 
-                source.startswith("rtmp://") or
-                source.startswith("http://") or
-                source.startswith("https://")
-            ):
-                # Streaming source (RTSP/RTMP/HTTP)
-                if source.startswith("rtsp://"):
-                    # RTSP-specific optimized pipeline for DeepStream
-                    source_element = f"rtspsrc location={source} latency=0 buffer-mode=auto ! rtph264depay ! h264parse"
+            # Release previous capture if it exists
+            if self.cap is not None:
+                try:
+                    self.cap.release()
+                    time.sleep(0.2)  # Reduced release wait time
+                except Exception:
+                    pass
+                self.cap = None
+            
+            # Determine if this is an RTSP source
+            is_rtsp = source.startswith('rtsp://')
+            
+            if is_rtsp:
+                # CRITICAL OPTIMIZATION: Use GStreamer pipeline for RTSP with ultra-low latency settings
+                # This is one of the most important optimizations for reducing latency
+                gst_pipeline = (
+                    f"rtspsrc location={source} latency=0 buffer-mode=auto ! "
+                    f"rtph264depay ! h264parse ! avdec_h264 ! "
+                    f"videoconvert ! appsink max-buffers=1 drop=true sync=false"
+                )
+                
+                logger.info(f"[CAMERA:{self.camera_id}] Using optimized GStreamer pipeline")
+                cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
+                
+                # Fallback to FFMPEG if GStreamer fails
+                if not cap.isOpened():
+                    logger.warning(f"[CAMERA:{self.camera_id}] GStreamer failed, using FFMPEG with optimized settings")
                     
-                    # Add hardware decoding if CUDA is available
-                    if self.cuda_available:
-                        source_element += " ! nvv4l2decoder enable-max-performance=1 ! nvvidconv"
-                    else:
-                        source_element += " ! avdec_h264 ! videoconvert"
-                        
-                elif source.startswith("http") and source.endswith((".mp4", ".mkv", ".avi")):
-                    # HTTP video file
-                    source_element = f"souphttpsrc location={source} ! decodebin"
-                else:
-                    # Generic streaming source
-                    source_element = f"uridecodebin uri={source}"
-            
-            elif source.isdigit() or source == "0":
-                # Local camera (V4L2)
-                source_element = f"v4l2src device=/dev/video{source} ! video/x-raw, width=640, height=480, framerate=30/1"
+                    # Optimized FFMPEG settings for low latency
+                    ffmpeg_options = []
+                    ffmpeg_options.append("rtsp_transport;tcp")      # TCP is more reliable
+                    ffmpeg_options.append("stimeout;2000000")        # Reduced timeout
+                    ffmpeg_options.append("fflags;nobuffer+discardcorrupt")  # No buffering + discard corrupt
+                    ffmpeg_options.append("flags;low_delay")         # Low delay flag
+                    ffmpeg_options.append("max_delay;50000")         # Drastically reduced delay (microseconds)
+                    ffmpeg_options.append("analyzeduration;100000")  # Reduced analyze time
+                    ffmpeg_options.append("probesize;32000")         # Smaller probe size
+                    ffmpeg_options.append("framedrop;1")             # Enable frame dropping
+                    
+                    os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = '|'.join(ffmpeg_options)
+                    cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
             else:
-                # Try one more time to handle RTSP URLs that may have formatting issues
-                if isinstance(source, str) and "rtsp://" in source:
-                    # Extract the RTSP URL part
-                    rtsp_part = source[source.find("rtsp://"):]
-                    end_markers = [" ", '"', "'"]
-                    for marker in end_markers:
-                        if marker in rtsp_part:
-                            rtsp_part = rtsp_part[:rtsp_part.find(marker)]
-                    
-                    logger.warning(f"[CAMERA:{self.camera_id}] Attempting to parse malformed RTSP URL: {rtsp_part}")
-                    source_element = f"rtspsrc location={rtsp_part} latency=0 buffer-mode=auto ! rtph264depay ! h264parse"
+                # For webcams or other sources
+                cap = cv2.VideoCapture(source)
+                if source.isdigit() or source == "0":  # Local webcam
+                    # Optimized webcam settings
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            
+            # Wait for connection
+            if not cap.isOpened():
+                logger.error(f"[CAMERA:{self.camera_id}] Failed to connect to: {source}")
+                if ALLOW_FALLBACK:
+                    logger.info(f"[CAMERA:{self.camera_id}] Falling back to local webcam")
+                    cap = cv2.VideoCapture(0)
+                    if not cap.isOpened():
+                        raise RuntimeError("Failed to connect to webcam")
                 else:
-                    # Unknown source type
-                    logger.error(f"[CAMERA:{self.camera_id}] Unsupported source: {source}")
-                    raise ValueError(f"Unsupported camera source: {source}")
+                    raise RuntimeError(f"Failed to connect to camera source: {source}")
             
-            # Build optimized DeepStream pipeline
-            pipeline_str = (
-                f"{source_element} ! "
-                f"nvvidconv ! "  # NVIDIA video converter
-                f"video/x-raw(memory:NVMM), format=NV12 ! "  # NVIDIA memory format
-                f"nvvidconv ! "  # Another converter for format conversion
-                f"video/x-raw, format=BGRx ! "  # Format that's compatible with OpenCV
-                f"videoconvert ! "  # Convert to BGR for OpenCV
-                f"video/x-raw, format=BGR ! "  # Final format for OpenCV
-                f"appsink name=appsink max-buffers=1 drop=true sync=false emit-signals=true"  # Output to our app
-            )
+            # Configure for low latency
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimum buffer
             
-            logger.info(f"[CAMERA:{self.camera_id}] Creating DeepStream pipeline")
-            logger.debug(f"[CAMERA:{self.camera_id}] Pipeline: {pipeline_str}")
+            # Get the original frame size
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            fps = cap.get(cv2.CAP_PROP_FPS)
             
-            # Create the pipeline
-            pipeline = Gst.parse_launch(pipeline_str)
+            logger.info(f"[CAMERA:{self.camera_id}] Connected: {width}x{height} @ {fps if fps > 0 else 'unknown'}fps")
             
-            # Get the appsink element for frame retrieval
-            appsink = pipeline.get_by_name("appsink")
-            appsink.set_property("emit-signals", True)
-            appsink.set_property("max-buffers", 1)
-            appsink.set_property("drop", True)
-            appsink.set_property("sync", False)
-            
-            # Connect to new-sample signal
-            appsink.connect("new-sample", self._on_new_sample)
-            
-            # Calculate the resize dimensions only once
+            # OPTIMIZATION: Calculate the resize dimensions only once
             aspect_ratio = width / height
             if aspect_ratio > (FRAME_WIDTH / FRAME_HEIGHT):
                 # Image is wider than target
@@ -222,318 +165,199 @@ class InputStream:
             new_height = new_height - (new_height % 2)
             
             logger.info(f"[CAMERA:{self.camera_id}] Resize target: {new_width}x{new_height}")
+            
+            # OPTIMIZATION: Pre-allocate resize buffer for zero-copy operations
             self.resize_dimensions = (new_width, new_height)
+            self.resize_buffer = np.zeros((new_height, new_width, 3), dtype=np.uint8)
             
-            # Set up bus for pipeline messages
-            bus = pipeline.get_bus()
-            bus.add_signal_watch()
-            bus.connect("message", self._on_bus_message)
-            
-            return pipeline, appsink, bus
-        
-        except Exception as e:
-            logger.error(f"[CAMERA:{self.camera_id}] Error creating DeepStream pipeline: {str(e)}")
-            raise RuntimeError(f"Failed to create DeepStream pipeline: {str(e)}")
-
-    def _on_new_sample(self, appsink):
-        """Callback for new frame from the DeepStream pipeline"""
-        try:
-            # Get the sample from appsink
-            sample = appsink.emit("pull-sample")
-            if sample:
-                # Get the buffer
-                buf = sample.get_buffer()
-                # Get caps
-                caps = sample.get_caps()
-                # Get buffer data
-                success, map_info = buf.map(Gst.MapFlags.READ)
-                if success:
-                    # Get frame dimensions from caps
-                    structure = caps.get_structure(0)
-                    width = structure.get_value("width")
-                    height = structure.get_value("height")
-                    
-                    # Convert to numpy array (suitable for OpenCV)
-                    frame = np.ndarray(
-                        shape=(height, width, 3),
-                        dtype=np.uint8,
-                        buffer=map_info.data
-                    )
-                    
-                    # Resize if needed
-                    if self.resize_dimensions:
-                        try:
-                            frame = cv2.resize(frame, self.resize_dimensions, interpolation=cv2.INTER_NEAREST)
-                        except Exception as e:
-                            logger.error(f"[CAMERA:{self.camera_id}] Resize error: {str(e)}")
-                    
-                    # Make a copy before releasing buffer
-                    frame = frame.copy()
-                    # Unmap buffer
-                    buf.unmap(map_info)
-                    
-                    # Update frame buffer
-                    with self.buffer_lock:
-                        self.buffer_index = (self.buffer_index + 1) % self.buffer_size
-                        self.frame_buffer[self.buffer_index] = frame
-                        self.latest_frame_index = self.buffer_index
-                    
-                    self.last_successful_read_time = time.time()
-                    self.frame_count += 1
-                    
-                    return Gst.FlowReturn.OK
-                else:
-                    logger.warning(f"[CAMERA:{self.camera_id}] Failed to map buffer")
-            
-            return Gst.FlowReturn.ERROR
-        except Exception as e:
-            logger.error(f"[CAMERA:{self.camera_id}] Error in new-sample handler: {str(e)}")
-            return Gst.FlowReturn.ERROR
-
-    def _on_bus_message(self, bus, message):
-        """Handle GStreamer pipeline messages"""
-        msg_type = message.type
-        
-        if msg_type == Gst.MessageType.ERROR:
-            err, debug = message.parse_error()
-            logger.error(f"[CAMERA:{self.camera_id}] Pipeline error: {err.message}")
-            # Try to recover
-            self._handle_pipeline_error()
-        
-        elif msg_type == Gst.MessageType.EOS:
-            logger.info(f"[CAMERA:{self.camera_id}] End of stream")
-            # Restart for stream sources that might terminate
-            if self.camera_url.startswith(("rtsp://", "http://", "https://")):
-                self._restart_pipeline()
-        
-        elif msg_type == Gst.MessageType.STATE_CHANGED:
-            if message.src == self.pipeline:
-                old_state, new_state, pending_state = message.parse_state_changed()
-                if new_state == Gst.State.PLAYING:
-                    logger.info(f"[CAMERA:{self.camera_id}] Pipeline is now playing")
-        
-        return True
-
-    def _handle_pipeline_error(self):
-        """Handle pipeline errors with recovery logic"""
-        current_time = time.time()
-        # Reset if errors are too frequent
-        if current_time - self.last_error_time < self.error_window:
-            self.decode_errors += 1
-        else:
-            self.decode_errors = 1
-        
-        self.last_error_time = current_time
-        
-        if self.decode_errors >= self.error_threshold:
-            logger.warning(f"[CAMERA:{self.camera_id}] Too many errors, restarting pipeline")
-            self._restart_pipeline()
-            self.decode_errors = 0
-
-    def _restart_pipeline(self):
-        """Restart the DeepStream pipeline"""
-        logger.info(f"[CAMERA:{self.camera_id}] Restarting pipeline")
-        if self.pipeline:
-            self.pipeline.set_state(Gst.State.NULL)
-            # Small delay to ensure cleanup
-            time.sleep(0.5)
-        
-        self._connect_to_source()
-
-    def _connect_to_source(self):
-        """Connect to the video source with DeepStream pipeline"""
-        try:
-            # Determine source from URL or ID
-            source = self.camera_url
-            
-            # Clean up existing pipeline if any
-            if self.pipeline:
-                self.pipeline.set_state(Gst.State.NULL)
-            
-            # Strip quotes if present for logging
-            log_source = source
-            if isinstance(log_source, str):
-                log_source = log_source.strip('"\'')
-                
-            logger.info(f"[CAMERA:{self.camera_id}] Connecting to: {log_source}")
-            
-            # Create new pipeline
-            try:
-                self.pipeline, self.appsink, self.bus = self._create_deepstream_pipeline(source)
-            except Exception as e:
-                logger.error(f"[CAMERA:{self.camera_id}] DeepStream pipeline creation failed: {str(e)}")
-                
-                # If ALLOW_FALLBACK is enabled, try OpenCV as a fallback
-                if ALLOW_FALLBACK:
-                    logger.warning(f"[CAMERA:{self.camera_id}] Attempting fallback to OpenCV capture")
-                    self._connect_with_opencv_fallback(source)
-                    return
-                else:
-                    raise  # Re-raise the exception if fallback is not allowed
-            
-            # Start the pipeline
-            ret = self.pipeline.set_state(Gst.State.PLAYING)
-            if ret == Gst.StateChangeReturn.FAILURE:
-                logger.error(f"[CAMERA:{self.camera_id}] Failed to start pipeline")
-                
-                # Try fallback if enabled
-                if ALLOW_FALLBACK:
-                    logger.warning(f"[CAMERA:{self.camera_id}] Pipeline start failed, trying OpenCV fallback")
-                    self._connect_with_opencv_fallback(source)
-                    return
-                else:
-                    raise RuntimeError(f"Failed to start DeepStream pipeline for {source}")
-            
+            self.cap = cap
             self.source = source
             
             # Reset error counters
             self.decode_errors = 0
             self.last_error_time = 0
             
-            logger.info(f"[CAMERA:{self.camera_id}] DeepStream pipeline started")
+            # Clear buffer
+            with self.buffer_lock:
+                for i in range(self.buffer_size):
+                    self.frame_buffer[i] = None
+                self.latest_frame_index = -1
             
+            return cap
+                
         except Exception as e:
-            logger.error(f"[CAMERA:{self.camera_id}] Error connecting to source: {str(e)}")
-            
-            # Last chance fallback
+            logger.error(f"[CAMERA:{self.camera_id}] Error connecting to camera: {str(e)}")
             if ALLOW_FALLBACK:
                 try:
-                    logger.warning(f"[CAMERA:{self.camera_id}] Last attempt fallback to OpenCV")
-                    self._connect_with_opencv_fallback(source)
-                    return
-                except Exception as fallback_e:
-                    logger.error(f"[CAMERA:{self.camera_id}] OpenCV fallback also failed: {str(fallback_e)}")
-                    
-            raise RuntimeError(f"Failed to connect to camera source: {str(e)}")
+                    cap = cv2.VideoCapture(0)
+                    if not cap.isOpened():
+                        raise RuntimeError("Failed to connect to webcam")
+                    self.cap = cap
+                    self.source = "webcam"
+                    return cap
+                except Exception as webcam_e:
+                    logger.error(f"[CAMERA:{self.camera_id}] Webcam fallback failed: {str(webcam_e)}")
+            raise
 
-    def _connect_with_opencv_fallback(self, source):
-        """Fallback to OpenCV for camera connection when DeepStream fails"""
-        import cv2
+    def _capture_thread_function(self):
+        """Ultra-optimized thread function to minimize frame latency"""
+        reconnect_delay = 0.5  # Reduced initial delay
+        max_reconnect_delay = 2.0  # Reduced max delay
+        consecutive_errors = 0
+        max_consecutive_errors = 3
+        last_frame_time = 0
         
-        logger.info(f"[CAMERA:{self.camera_id}] Attempting OpenCV fallback connection")
-        
-        # Clean source string if needed
-        if isinstance(source, str):
-            source = source.strip('"\'')
-        
-        # Try to convert to integer if it's a number
-        try:
-            if source.isdigit():
-                source = int(source)
-        except (AttributeError, ValueError):
-            pass
-        
-        # Create OpenCV capture
-        self.cap = cv2.VideoCapture(source)
-        
-        # Check if successfully opened
-        if not self.cap.isOpened():
-            logger.error(f"[CAMERA:{self.camera_id}] OpenCV fallback failed to open source: {source}")
-            raise RuntimeError(f"OpenCV fallback failed for source: {source}")
-        
-        # Set buffer size to minimize latency
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        
-        # Set dimensions
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-        
-        # Record that we're using OpenCV fallback
-        self.using_opencv_fallback = True
-        self.source = source
-        
-        logger.info(f"[CAMERA:{self.camera_id}] Successfully connected using OpenCV fallback")
+        # Signal thread initialization
+        self._thread_initialized.set()
 
-    def _glib_mainloop_thread(self):
-        """Thread function for GLib main loop"""
-        try:
-            # Set CPU affinity if possible
-            if os.name == 'posix' and hasattr(self, 'num_cpus') and self.num_cpus > 1:
-                try:
-                    import ctypes
-                    libc = ctypes.cdll.LoadLibrary('libc.so.6')
-                    SYS_gettid = 186
-                    tid = libc.syscall(SYS_gettid)
-                    # Use the last CPU core for the GLib loop
-                    target_cpu = self.num_cpus - 1
-                    os.sched_setaffinity(tid, {target_cpu})
-                    logger.info(f"[CAMERA:{self.camera_id}] Set GLib loop thread affinity to CPU core {target_cpu}")
-                except Exception as e:
-                    logger.warning(f"[CAMERA:{self.camera_id}] Could not set CPU affinity: {str(e)}")
-            
-            # Create GLib main loop
-            self.loop = GLib.MainLoop()
-            
-            # Signal that thread is initialized
-            self._thread_initialized.set()
-            
-            # Run the loop
-            self.loop.run()
-            
-        except Exception as e:
-            logger.error(f"[CAMERA:{self.camera_id}] Error in GLib main loop: {str(e)}")
+        while not self.stop_event.is_set():
+            try:
+                # Check connection status
+                if not self.cap or not self.cap.isOpened():
+                    logger.warning(f"[CAMERA:{self.camera_id}] Connection lost, reconnecting...")
+                    self.cap = self._connect_to_source()
+                    time.sleep(reconnect_delay)
+                    reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
+                    continue
+
+                # OPTIMIZATION: Direct read without lock for speed
+                ret, frame = self.cap.read()
+                
+                current_time = time.time()
+                
+                # Check if we got a valid frame
+                if not ret or frame is None or len(frame.shape) != 3:
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        logger.warning(f"[CAMERA:{self.camera_id}] {consecutive_errors} consecutive failures, reconnecting...")
+                        self.cap = self._connect_to_source()
+                        time.sleep(reconnect_delay)
+                        reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
+                        consecutive_errors = 0
+                    time.sleep(0.001)  # Minimal sleep
+                    continue
+                
+                # Successfully got frame
+                consecutive_errors = 0
+                reconnect_delay = 0.5  # Reset reconnect delay
+                
+                # OPTIMIZATION: Resize using pre-allocated buffer for better performance
+                if self.resize_dimensions:
+                    h, w = frame.shape[:2]
+                    if h > 0 and w > 0:
+                        try:
+                            # OPTIMIZATION: Use nearest neighbor for fastest resize
+                            cv2.resize(frame, self.resize_dimensions, dst=self.resize_buffer, 
+                                      interpolation=cv2.INTER_NEAREST)
+                            frame = self.resize_buffer
+                        except Exception:
+                            # Fallback to standard resize if pre-allocation fails
+                            frame = cv2.resize(frame, self.resize_dimensions, 
+                                              interpolation=cv2.INTER_NEAREST)
+                
+                # OPTIMIZATION: Use ring buffer instead of queue for lower overhead
+                with self.buffer_lock:
+                    # Update buffer with new frame
+                    self.buffer_index = (self.buffer_index + 1) % self.buffer_size
+                    self.frame_buffer[self.buffer_index] = frame
+                    self.latest_frame_index = self.buffer_index
+                
+                self.last_successful_read_time = current_time
+                self.frame_count += 1
+                
+                # OPTIMIZATION: Dynamic sleep based on frame rate
+                # If we're getting frames too quickly, sleep a tiny bit to prevent CPU overload
+                elapsed = current_time - last_frame_time
+                if elapsed < 0.016:  # targeting 60fps max (1/60 ≈ 0.016)
+                    sleep_time = max(0.001, 0.016 - elapsed)
+                    time.sleep(sleep_time)
+                
+                last_frame_time = current_time
+                
+            except Exception as e:
+                logger.error(f"[CAMERA:{self.camera_id}] Error in capture thread: {str(e)}")
+                time.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 1.5, max_reconnect_delay)
 
     def _start_capture_thread(self):
-        """Start the GLib main loop thread for DeepStream capture"""
+        """Start the frame capture thread with fast initialization"""
         # Don't start if already running
-        if self.mainloop_thread is not None and self.mainloop_thread.is_alive():
+        if self.capture_thread is not None and self.capture_thread.is_alive():
             return
         
         # Clear stop event and reset initialization event
         self.stop_event.clear()
         self._thread_initialized.clear()
         
-        # Create and start main loop thread
-        self.mainloop_thread = threading.Thread(
-            target=self._glib_mainloop_thread,
-            name=f"Camera-{self.camera_id}-GLib-Thread",
+        # Create and start thread with high priority
+        self.capture_thread = threading.Thread(
+            target=self._capture_thread_function, 
+            name=f"Camera-{self.camera_id}-Thread",
             daemon=True
         )
         
+        # OPTIMIZATION: Set thread to higher priority if possible
         try:
-            self.mainloop_thread.start()
+            self.capture_thread.start()
+            # Try to set thread priority higher on platforms that support it
+            if hasattr(os, "sched_setaffinity") and os.name == 'posix':
+                # On Linux, try to set CPU affinity to the first CPU
+                try:
+                    import ctypes
+                    libc = ctypes.cdll.LoadLibrary('libc.so.6')
+                    SYS_gettid = 186
+                    tid = libc.syscall(SYS_gettid)
+                    os.sched_setaffinity(tid, {0})  # Set affinity to CPU 0
+                except:
+                    pass
         except Exception as e:
-            logger.error(f"[CAMERA:{self.camera_id}] Failed to start GLib thread: {str(e)}")
+            logger.error(f"[CAMERA:{self.camera_id}] Failed to start thread: {str(e)}")
             return
         
         # Wait for thread initialization but with shorter timeout
         if not self._thread_initialized.wait(timeout=2.0):
-            logger.warning(f"[CAMERA:{self.camera_id}] GLib thread initialization timeout")
+            logger.warning(f"[CAMERA:{self.camera_id}] Thread initialization timeout")
         
-        logger.info(f"[CAMERA:{self.camera_id}] Started GLib main loop thread")
+        logger.info(f"[CAMERA:{self.camera_id}] Started high-priority capture thread")
 
     def read(self):
         """Ultra low-latency frame reading directly from the latest frame"""
         try:
-            # Check if we're using OpenCV fallback
-            if hasattr(self, 'using_opencv_fallback') and self.using_opencv_fallback:
-                if hasattr(self, 'cap') and self.cap is not None:
-                    ret, frame = self.cap.read()
-                    if ret:
-                        self.last_frame = frame
-                        self.frame_count += 1
+            # OPTIMIZATION: Short-circuit for speed - direct access to latest frame
+            with self.buffer_lock:
+                if self.latest_frame_index >= 0:
+                    frame = self.frame_buffer[self.latest_frame_index]
+                    if frame is not None:
+                        self.last_frame = frame  # Cache it
                         return True, frame
-            else:
-                # Direct access to latest frame from DeepStream
-                with self.buffer_lock:
-                    if self.latest_frame_index >= 0:
-                        frame = self.frame_buffer[self.latest_frame_index]
-                        if frame is not None:
-                            self.last_frame = frame  # Cache it
-                            return True, frame
             
-                # Check if the pipeline is running
-                if self.pipeline:
-                    state = self.pipeline.get_state(0)[1]
-                    if state != Gst.State.PLAYING:
-                        logger.warning(f"[CAMERA:{self.camera_id}] Pipeline not in PLAYING state, restarting")
-                        self._restart_pipeline()
+            # Check if capture thread is running, restart if needed
+            if self.capture_thread is None or not self.capture_thread.is_alive():
+                logger.warning(f"[CAMERA:{self.camera_id}] Capture thread not running, restarting")
+                self._start_capture_thread()
+                time.sleep(0.05)  # Reduced delay
             
-                # Check if GLib thread is running
-                if self.mainloop_thread is None or not self.mainloop_thread.is_alive():
-                    logger.warning(f"[CAMERA:{self.camera_id}] GLib thread not running, restarting")
-                    self._start_capture_thread()
-                    time.sleep(0.05)  # Small delay
+            # OPTIMIZATION: Direct capture as fallback but only if really needed
+            # This reduces excess buffer reads when we already have a thread
+            if self.cap and self.cap.isOpened():
+                try:
+                    ret, frame = self.cap.read()
+                    if ret and frame is not None:
+                        # Resize if needed
+                        if self.resize_dimensions:
+                            # Try to use pre-allocated buffer
+                            try:
+                                cv2.resize(frame, self.resize_dimensions, dst=self.resize_buffer,
+                                          interpolation=cv2.INTER_NEAREST)
+                                frame = self.resize_buffer
+                            except:
+                                frame = cv2.resize(frame, self.resize_dimensions, 
+                                                 interpolation=cv2.INTER_NEAREST)
+                                
+                        self.last_frame = frame
+                        return True, frame
+                except Exception as e:
+                    logger.debug(f"[CAMERA:{self.camera_id}] Error in direct capture: {str(e)}")
             
             # Last resort: use cached frame
             if self.last_frame is not None:
@@ -566,40 +390,23 @@ class InputStream:
         return 0
 
     def release(self):
-        """Safely release all DeepStream resources"""
-        # Check if using OpenCV fallback
-        if hasattr(self, 'using_opencv_fallback') and self.using_opencv_fallback:
-            if hasattr(self, 'cap') and self.cap is not None:
-                try:
-                    self.cap.release()
-                except Exception as e:
-                    logger.warning(f"[CAMERA:{self.camera_id}] Error releasing OpenCV capture: {str(e)}")
-            logger.info(f"[CAMERA:{self.camera_id}] Released OpenCV resources")
-            return
-            
+        """Safely release all resources with minimal waiting"""
         # Set stop event
         self.stop_event.set()
         
-        # Stop GLib main loop
-        if hasattr(self, 'loop') and self.loop is not None:
-            try:
-                self.loop.quit()
-            except Exception as e:
-                logger.warning(f"[CAMERA:{self.camera_id}] Error stopping GLib loop: {str(e)}")
-        
         # Wait briefly for thread to stop
-        if self.mainloop_thread is not None:
+        if self.capture_thread is not None:
             try:
-                self.mainloop_thread.join(timeout=0.5)
-            except Exception as e:
-                logger.warning(f"[CAMERA:{self.camera_id}] Error joining thread: {str(e)}")
+                self.capture_thread.join(timeout=0.5)  # Reduced timeout
+            except Exception:
+                pass
             
-        # Stop pipeline
-        if self.pipeline is not None:
+        # Release capture device
+        if self.cap is not None:
             try:
-                self.pipeline.set_state(Gst.State.NULL)
-            except Exception as e:
-                logger.warning(f"[CAMERA:{self.camera_id}] Error stopping pipeline: {str(e)}")
-            self.pipeline = None
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
         
-        logger.info(f"[CAMERA:{self.camera_id}] Released DeepStream resources")
+        logger.info(f"[CAMERA:{self.camera_id}] Released resources")
