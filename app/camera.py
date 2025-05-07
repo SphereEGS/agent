@@ -32,6 +32,19 @@ class InputStream:
         # Initialize GStreamer
         Gst.init(None)
         
+        # Check CUDA availability for optimizations
+        self.cuda_available = False
+        try:
+            # Attempt to detect CUDA/GPU availability on Jetson
+            if os.path.exists('/dev/nvhost-ctrl'):
+                self.cuda_available = True
+                logger.info(f"[CAMERA:{camera_id}] CUDA acceleration available")
+            elif os.path.exists('/usr/local/cuda'):
+                self.cuda_available = True
+                logger.info(f"[CAMERA:{camera_id}] CUDA installation detected")
+        except Exception as e:
+            logger.warning(f"[CAMERA:{camera_id}] Error checking CUDA: {str(e)}")
+        
         self.frame_count = 0
         self.last_frame = None
         self.source = None
@@ -53,11 +66,17 @@ class InputStream:
         # Get the camera URL for the specified camera ID
         if camera_id in CAMERA_URLS:
             self.camera_url = CAMERA_URLS[camera_id]
+            # Strip quotes if present in the URL from config
+            if isinstance(self.camera_url, str):
+                self.camera_url = self.camera_url.strip('"\'')
         else:
             # Fallback to main camera if the specified ID is not found
             logger.warning(f"[CAMERA] Camera ID '{camera_id}' not found, using main camera")
             self.camera_id = "main"
             self.camera_url = CAMERA_URL  # For backward compatibility
+            # Strip quotes if present
+            if isinstance(self.camera_url, str):
+                self.camera_url = self.camera_url.strip('"\'')
         
         # Use a ring buffer instead of queue for lower latency
         self.buffer_size = 2  # Minimum buffer size to reduce latency
@@ -110,6 +129,10 @@ class InputStream:
             width = FRAME_WIDTH
             height = FRAME_HEIGHT
             
+            # Strip quotes from source if present
+            if isinstance(source, str):
+                source = source.strip('"\'')
+            
             # Determine the source type and build appropriate pipeline
             if isinstance(source, str) and (
                 source.startswith("rtsp://") or 
@@ -121,6 +144,13 @@ class InputStream:
                 if source.startswith("rtsp://"):
                     # RTSP-specific optimized pipeline for DeepStream
                     source_element = f"rtspsrc location={source} latency=0 buffer-mode=auto ! rtph264depay ! h264parse"
+                    
+                    # Add hardware decoding if CUDA is available
+                    if self.cuda_available:
+                        source_element += " ! nvv4l2decoder enable-max-performance=1 ! nvvidconv"
+                    else:
+                        source_element += " ! avdec_h264 ! videoconvert"
+                        
                 elif source.startswith("http") and source.endswith((".mp4", ".mkv", ".avi")):
                     # HTTP video file
                     source_element = f"souphttpsrc location={source} ! decodebin"
@@ -132,9 +162,21 @@ class InputStream:
                 # Local camera (V4L2)
                 source_element = f"v4l2src device=/dev/video{source} ! video/x-raw, width=640, height=480, framerate=30/1"
             else:
-                # Unknown source type
-                logger.error(f"[CAMERA:{self.camera_id}] Unsupported source: {source}")
-                raise ValueError(f"Unsupported camera source: {source}")
+                # Try one more time to handle RTSP URLs that may have formatting issues
+                if isinstance(source, str) and "rtsp://" in source:
+                    # Extract the RTSP URL part
+                    rtsp_part = source[source.find("rtsp://"):]
+                    end_markers = [" ", '"', "'"]
+                    for marker in end_markers:
+                        if marker in rtsp_part:
+                            rtsp_part = rtsp_part[:rtsp_part.find(marker)]
+                    
+                    logger.warning(f"[CAMERA:{self.camera_id}] Attempting to parse malformed RTSP URL: {rtsp_part}")
+                    source_element = f"rtspsrc location={rtsp_part} latency=0 buffer-mode=auto ! rtph264depay ! h264parse"
+                else:
+                    # Unknown source type
+                    logger.error(f"[CAMERA:{self.camera_id}] Unsupported source: {source}")
+                    raise ValueError(f"Unsupported camera source: {source}")
             
             # Build optimized DeepStream pipeline
             pipeline_str = (
@@ -308,16 +350,39 @@ class InputStream:
             if self.pipeline:
                 self.pipeline.set_state(Gst.State.NULL)
             
-            logger.info(f"[CAMERA:{self.camera_id}] Connecting to: {source}")
+            # Strip quotes if present for logging
+            log_source = source
+            if isinstance(log_source, str):
+                log_source = log_source.strip('"\'')
+                
+            logger.info(f"[CAMERA:{self.camera_id}] Connecting to: {log_source}")
             
             # Create new pipeline
-            self.pipeline, self.appsink, self.bus = self._create_deepstream_pipeline(source)
+            try:
+                self.pipeline, self.appsink, self.bus = self._create_deepstream_pipeline(source)
+            except Exception as e:
+                logger.error(f"[CAMERA:{self.camera_id}] DeepStream pipeline creation failed: {str(e)}")
+                
+                # If ALLOW_FALLBACK is enabled, try OpenCV as a fallback
+                if ALLOW_FALLBACK:
+                    logger.warning(f"[CAMERA:{self.camera_id}] Attempting fallback to OpenCV capture")
+                    self._connect_with_opencv_fallback(source)
+                    return
+                else:
+                    raise  # Re-raise the exception if fallback is not allowed
             
             # Start the pipeline
             ret = self.pipeline.set_state(Gst.State.PLAYING)
             if ret == Gst.StateChangeReturn.FAILURE:
                 logger.error(f"[CAMERA:{self.camera_id}] Failed to start pipeline")
-                raise RuntimeError(f"Failed to start DeepStream pipeline for {source}")
+                
+                # Try fallback if enabled
+                if ALLOW_FALLBACK:
+                    logger.warning(f"[CAMERA:{self.camera_id}] Pipeline start failed, trying OpenCV fallback")
+                    self._connect_with_opencv_fallback(source)
+                    return
+                else:
+                    raise RuntimeError(f"Failed to start DeepStream pipeline for {source}")
             
             self.source = source
             
@@ -329,7 +394,55 @@ class InputStream:
             
         except Exception as e:
             logger.error(f"[CAMERA:{self.camera_id}] Error connecting to source: {str(e)}")
+            
+            # Last chance fallback
+            if ALLOW_FALLBACK:
+                try:
+                    logger.warning(f"[CAMERA:{self.camera_id}] Last attempt fallback to OpenCV")
+                    self._connect_with_opencv_fallback(source)
+                    return
+                except Exception as fallback_e:
+                    logger.error(f"[CAMERA:{self.camera_id}] OpenCV fallback also failed: {str(fallback_e)}")
+                    
             raise RuntimeError(f"Failed to connect to camera source: {str(e)}")
+
+    def _connect_with_opencv_fallback(self, source):
+        """Fallback to OpenCV for camera connection when DeepStream fails"""
+        import cv2
+        
+        logger.info(f"[CAMERA:{self.camera_id}] Attempting OpenCV fallback connection")
+        
+        # Clean source string if needed
+        if isinstance(source, str):
+            source = source.strip('"\'')
+        
+        # Try to convert to integer if it's a number
+        try:
+            if source.isdigit():
+                source = int(source)
+        except (AttributeError, ValueError):
+            pass
+        
+        # Create OpenCV capture
+        self.cap = cv2.VideoCapture(source)
+        
+        # Check if successfully opened
+        if not self.cap.isOpened():
+            logger.error(f"[CAMERA:{self.camera_id}] OpenCV fallback failed to open source: {source}")
+            raise RuntimeError(f"OpenCV fallback failed for source: {source}")
+        
+        # Set buffer size to minimize latency
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
+        # Set dimensions
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+        
+        # Record that we're using OpenCV fallback
+        self.using_opencv_fallback = True
+        self.source = source
+        
+        logger.info(f"[CAMERA:{self.camera_id}] Successfully connected using OpenCV fallback")
 
     def _glib_mainloop_thread(self):
         """Thread function for GLib main loop"""
@@ -392,26 +505,35 @@ class InputStream:
     def read(self):
         """Ultra low-latency frame reading directly from the latest frame"""
         try:
-            # Direct access to latest frame
-            with self.buffer_lock:
-                if self.latest_frame_index >= 0:
-                    frame = self.frame_buffer[self.latest_frame_index]
-                    if frame is not None:
-                        self.last_frame = frame  # Cache it
+            # Check if we're using OpenCV fallback
+            if hasattr(self, 'using_opencv_fallback') and self.using_opencv_fallback:
+                if hasattr(self, 'cap') and self.cap is not None:
+                    ret, frame = self.cap.read()
+                    if ret:
+                        self.last_frame = frame
+                        self.frame_count += 1
                         return True, frame
+            else:
+                # Direct access to latest frame from DeepStream
+                with self.buffer_lock:
+                    if self.latest_frame_index >= 0:
+                        frame = self.frame_buffer[self.latest_frame_index]
+                        if frame is not None:
+                            self.last_frame = frame  # Cache it
+                            return True, frame
             
-            # Check if the pipeline is running
-            if self.pipeline:
-                state = self.pipeline.get_state(0)[1]
-                if state != Gst.State.PLAYING:
-                    logger.warning(f"[CAMERA:{self.camera_id}] Pipeline not in PLAYING state, restarting")
-                    self._restart_pipeline()
+                # Check if the pipeline is running
+                if self.pipeline:
+                    state = self.pipeline.get_state(0)[1]
+                    if state != Gst.State.PLAYING:
+                        logger.warning(f"[CAMERA:{self.camera_id}] Pipeline not in PLAYING state, restarting")
+                        self._restart_pipeline()
             
-            # Check if GLib thread is running
-            if self.mainloop_thread is None or not self.mainloop_thread.is_alive():
-                logger.warning(f"[CAMERA:{self.camera_id}] GLib thread not running, restarting")
-                self._start_capture_thread()
-                time.sleep(0.05)  # Small delay
+                # Check if GLib thread is running
+                if self.mainloop_thread is None or not self.mainloop_thread.is_alive():
+                    logger.warning(f"[CAMERA:{self.camera_id}] GLib thread not running, restarting")
+                    self._start_capture_thread()
+                    time.sleep(0.05)  # Small delay
             
             # Last resort: use cached frame
             if self.last_frame is not None:
@@ -445,6 +567,16 @@ class InputStream:
 
     def release(self):
         """Safely release all DeepStream resources"""
+        # Check if using OpenCV fallback
+        if hasattr(self, 'using_opencv_fallback') and self.using_opencv_fallback:
+            if hasattr(self, 'cap') and self.cap is not None:
+                try:
+                    self.cap.release()
+                except Exception as e:
+                    logger.warning(f"[CAMERA:{self.camera_id}] Error releasing OpenCV capture: {str(e)}")
+            logger.info(f"[CAMERA:{self.camera_id}] Released OpenCV resources")
+            return
+            
         # Set stop event
         self.stop_event.set()
         
