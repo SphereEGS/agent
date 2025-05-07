@@ -127,7 +127,7 @@ class InputStream:
         try:
             # Get original dimensions for resizing calculations
             width = FRAME_WIDTH
-            height = FRAMEetos
+            height = FRAME_HEIGHT
             # Strip quotes from source if present
             if isinstance(source, str):
                 source = source.strip('"\'')
