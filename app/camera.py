@@ -51,48 +51,49 @@ class InputStream:
         self._start_stream()
     
     def _create_pipeline(self):
-        """Create a simple DeepStream pipeline based on the working test script"""
+        """Create a GStreamer→DeepStream→appsink pipeline that outputs BGR frames."""
         try:
-            # Use dimensions from config
-            width = FRAME_WIDTH
+            width  = FRAME_WIDTH
             height = FRAME_HEIGHT
-            
-            # Create pipeline for RTSP source
+
             if self.camera_url.startswith("rtsp://"):
-                pipeline_str = (
-                    f"rtspsrc location={self.camera_url} latency=0 ! "
+                src = (
+                    "rtspsrc location=%s latency=200 ! "
                     "rtph264depay ! h264parse ! nvv4l2decoder ! "
-                    f"nvvidconv ! video/x-raw,format=NV12,width={width},height={height} ! "
+                    # keep it in NVMM memory until just before appsink
+                    "nvvidconv ! video/x-raw(memory:NVMM),format=I420,width=%d,height=%d ! "
+                    # convert from NVMM I420 into BGR
+                    "nvvidconv ! video/x-raw,format=BGR,width=%d,height=%d ! "
+                    # finally hand off to appsink as plain CPU memory
                     "videoconvert ! video/x-raw,format=BGR ! "
-                    "appsink name=appsink max-buffers=1 drop=true sync=false emit-signals=true"
-                )
+                    "appsink name=appsink sync=false emit-signals=true "
+                    "max-buffers=2 drop=true"
+                ) % (self.camera_url, width, height, width, height)
             else:
-                # For non-RTSP sources (fallback to generic uridecodebin)
-                pipeline_str = (
-                    f"uridecodebin uri={self.camera_url} ! "
-                    f"videoconvert ! video/x-raw,format=BGR,width={width},height={height} ! "
-                    "appsink name=appsink max-buffers=1 drop=true sync=false emit-signals=true"
-                )
-            
-            logger.info(f"[CAMERA:{self.camera_id}] Creating pipeline")
-            
-            # Parse and create the pipeline
-            self.pipeline = Gst.parse_launch(pipeline_str)
-            
-            # Get the appsink element
-            self.appsink = self.pipeline.get_by_name("appsink")
+                src = (
+                    "uridecodebin uri=%s ! "
+                    "nvvidconv ! video/x-raw(memory:NVMM),format=I420,width=%d,height=%d ! "
+                    "nvvidconv ! video/x-raw,format=BGR,width=%d,height=%d ! "
+                    "videoconvert ! video/x-raw,format=BGR ! "
+                    "appsink name=appsink sync=false emit-signals=true "
+                    "max-buffers=2 drop=true"
+                ) % (self.camera_url, width, height, width, height)
+
+            logger.info(f"[CAMERA:{self.camera_id}] GStreamer pipeline: {src}")
+
+            self.pipeline = Gst.parse_launch(src)
+            self.appsink  = self.pipeline.get_by_name("appsink")
             self.appsink.connect("new-sample", self._on_new_sample)
-            
-            # Set up bus for messages
+
             self.bus = self.pipeline.get_bus()
             self.bus.add_signal_watch()
             self.bus.connect("message", self._on_bus_message)
-            
+
             return True
-            
         except Exception as e:
-            logger.error(f"[CAMERA:{self.camera_id}] Error creating pipeline: {str(e)}")
+            logger.error(f"[CAMERA:{self.camera_id}] Error creating pipeline: {e}")
             return False
+
 
     def _on_new_sample(self, appsink):
         """Handle new video frames from the pipeline"""
