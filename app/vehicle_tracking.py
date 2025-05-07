@@ -869,60 +869,12 @@ class VehicleTracker:
                     jetson.utils.cudaDeviceSynchronize()
                     logger.info(f"[TRACKER:{self.camera_id}] Successfully displayed using jetson.utils")
                 else:
-                    # Use GStreamer display for DeepStream compatibility
+                    # Use standard OpenCV display
                     window_name = f'Detections - {self.camera_id}'
-                    logger.info(f"[TRACKER:{self.camera_id}] Using GStreamer display with window name: {window_name}")
-                    
-                    try:
-                        # First time we need to create the display pipeline
-                        if not hasattr(self, 'display_pipeline') or self.display_pipeline is None:
-                            logger.info(f"[TRACKER:{self.camera_id}] Creating GStreamer display pipeline")
-                            import gi
-                            gi.require_version('Gst', '1.0')
-                            from gi.repository import Gst, GLib
-                            
-                            # Initialize GStreamer if not already initialized
-                            if not Gst.is_initialized():
-                                Gst.init(None)
-                            
-                            # Create display pipeline with nvoverlaysink for hardware acceleration
-                            pipeline_str = (
-                                "appsrc name=source is-live=true format=time ! "
-                                "videoconvert ! video/x-raw,format=RGBA ! "
-                                "nvvidconv ! "
-                                f"nvoverlaysink window-width={vis_frame.shape[1]} window-height={vis_frame.shape[0]} window-x=20 window-y=20 sync=false"
-                            )
-                            
-                            self.display_pipeline = Gst.parse_launch(pipeline_str)
-                            self.appsrc = self.display_pipeline.get_by_name('source')
-                            
-                            # Configure appsrc
-                            caps = Gst.Caps.from_string(f"video/x-raw,format=RGBA,width={vis_frame.shape[1]},height={vis_frame.shape[0]},framerate=30/1")
-                            self.appsrc.set_property('caps', caps)
-                            
-                            # Start the pipeline
-                            self.display_pipeline.set_state(Gst.State.PLAYING)
-                            logger.info(f"[TRACKER:{self.camera_id}] GStreamer display pipeline started")
-                        
-                        # Convert frame to RGBA for GStreamer
-                        frame_rgba = cv2.cvtColor(vis_frame, cv2.COLOR_BGR2RGBA)
-                        
-                        # Create GStreamer buffer from numpy array
-                        data = frame_rgba.tobytes()
-                        buf = Gst.Buffer.new_allocate(None, len(data), None)
-                        buf.fill(0, data)
-                        
-                        # Push buffer to appsrc
-                        self.appsrc.emit('push-buffer', buf)
-                        logger.debug(f"[TRACKER:{self.camera_id}] Frame pushed to GStreamer pipeline")
-                    except Exception as gst_err:
-                        logger.error(f"[TRACKER:{self.camera_id}] GStreamer error: {str(gst_err)}")
-                        # Fall back to cv2.imshow as last resort
-                        logger.info(f"[TRACKER:{self.camera_id}] Falling back to OpenCV display")
-                        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-                        cv2.resizeWindow(window_name, vis_frame.shape[1], vis_frame.shape[0])
-                        cv2.imshow(window_name, vis_frame)
-                        cv2.waitKey(1) # This needs to be called to actually display the window
+                    logger.info(f"[TRACKER:{self.camera_id}] Using OpenCV display with window name: {window_name}")
+                    cv2.imshow(window_name, vis_frame)
+                    cv2.waitKey(1) # This needs to be called to actually display the window
+                    logger.info(f"[TRACKER:{self.camera_id}] OpenCV window should be visible now")
             except Exception as e:
                 logger.error(f"[TRACKER:{self.camera_id}] Display error: {str(e)}")
                 # Print detailed stack trace
@@ -1022,35 +974,3 @@ class VehicleTracker:
     def get_detected_plate(self, track_id):
         """Get the detected plate for a specific vehicle ID"""
         return self.detected_plates.get(track_id, None)
-        
-    def cleanup(self):
-        """Properly cleanup GStreamer resources on shutdown"""
-        try:
-            logger.info(f"[TRACKER:{self.camera_id}] Cleaning up resources")
-            
-            # Cleanup GStreamer pipeline if it exists
-            if hasattr(self, 'display_pipeline') and self.display_pipeline is not None:
-                logger.info(f"[TRACKER:{self.camera_id}] Stopping GStreamer display pipeline")
-                # Send EOS to pipeline
-                if hasattr(self, 'appsrc') and self.appsrc is not None:
-                    try:
-                        self.appsrc.emit('end-of-stream')
-                        logger.debug(f"[TRACKER:{self.camera_id}] Sent EOS to appsrc")
-                    except Exception as e:
-                        logger.warning(f"[TRACKER:{self.camera_id}] Error sending EOS: {str(e)}")
-                
-                # Stop pipeline
-                try:
-                    self.display_pipeline.set_state(Gst.State.NULL)
-                    logger.debug(f"[TRACKER:{self.camera_id}] Pipeline state set to NULL")
-                except Exception as e:
-                    logger.warning(f"[TRACKER:{self.camera_id}] Error setting pipeline state to NULL: {str(e)}")
-                
-                # Clear references
-                self.display_pipeline = None
-                self.appsrc = None
-                logger.info(f"[TRACKER:{self.camera_id}] GStreamer resources released")
-                
-            logger.info(f"[TRACKER:{self.camera_id}] Cleanup completed")
-        except Exception as e:
-            logger.error(f"[TRACKER:{self.camera_id}] Error during cleanup: {str(e)}")

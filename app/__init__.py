@@ -6,7 +6,6 @@ import cv2
 import requests
 import threading
 import numpy as np
-import signal
 
 from app.camera import InputStream
 from app.config import API_BASE_URL, CAMERA_URLS, CAMERA_TYPES, GATE, PROCESS_EVERY, logger
@@ -83,24 +82,10 @@ class SpherexAgent:
         # Processing flag for each camera
         self.processing_flags = {}
 
-        # Setup signal handlers for graceful shutdown
-        self._setup_signal_handlers()
-
         logger.info("[AGENT] SpherexAgent initialized successfully")
         
         # Flag to indicate if the system should continue running
         self.is_running = True
-
-    def _setup_signal_handlers(self):
-        """Set up signal handlers for graceful termination"""
-        def signal_handler(sig, frame):
-            logger.info(f"[AGENT] Received signal {sig}, shutting down gracefully...")
-            self.is_running = False
-        
-        # Register SIGINT (CTRL+C) and SIGTERM handlers
-        signal.signal(signal.SIGINT, signal_handler)
-        signal.signal(signal.SIGTERM, signal_handler)
-        logger.info("[AGENT] Signal handlers registered for graceful shutdown")
 
     def initialize_streams(self):
         """Initialize all camera streams"""
@@ -314,9 +299,13 @@ class SpherexAgent:
         )
 
         try:
-            # When using DeepStream and GStreamer display, we should not create OpenCV windows
-            # as they'll be created by the GStreamer pipeline in vehicle_tracking.py
-            
+            # Create a named window for each camera first in the main thread
+            # This helps ensure windows are properly created before threads try to use them
+            for camera_id in self.camera_manager.get_camera_ids():
+                window_name = f'Detections - {camera_id}'
+                logger.info(f"[AGENT] Creating named window for {camera_id}: {window_name}")
+                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                
             # Start a thread for each camera
             threads = []
             for camera_id in self.camera_manager.get_camera_ids():
@@ -329,22 +318,33 @@ class SpherexAgent:
                 threads.append(thread)
                 
             # Main thread monitors keypresses for exiting
-            logger.info("[AGENT] Main thread monitoring for keypresses. Windows should be visible via GStreamer/DeepStream.")
-            
+            logger.info("[AGENT] Main thread monitoring for keypresses. Windows should be visible now.")
+            logger.info("[AGENT] If no windows appear, check for X11/display errors.")
+            empty_frame_cycle = 0
             while self.is_running:
-                # We can't use cv2.waitKey with DeepStream, so we'll check for keyboard input directly
-                try:
-                    # Non-blocking keyboard check
-                    import sys, select
-                    if select.select([sys.stdin], [], [], 0.1)[0]:
-                        key = sys.stdin.read(1)
-                        if key.lower() == 'q':
-                            logger.info("[AGENT] User pressed 'q', exiting")
-                            self.is_running = False
-                            break
-                except Exception as e:
-                    # Fall back to sleep if keyboard check fails
-                    pass
+                key = cv2.waitKey(100) & 0xFF  # Increased wait time for better key detection
+                
+                # Allow quitting with 'q' key
+                if key == ord("q"):
+                    logger.info("[AGENT] User pressed 'q', exiting")
+                    self.is_running = False
+                    break
+                
+                # Periodically call imshow in main thread to ensure windows stay responsive
+                empty_frame_cycle += 1
+                if empty_frame_cycle >= 10:  # Every ~1 second
+                    empty_frame_cycle = 0
+                    # Display a small empty frame for each window to keep it responsive
+                    for camera_id in self.camera_manager.get_camera_ids():
+                        try:
+                            window_name = f'Detections - {camera_id}'
+                            # Get the last frame if any
+                            small_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+                            cv2.putText(small_frame, "Waiting...", (10, 50), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                            cv2.imshow(window_name, small_frame)
+                        except Exception as e:
+                            logger.warning(f"[AGENT] Error refreshing window {window_name}: {e}")
                 
                 sleep(0.1)  # Reduce CPU usage in main thread
 
@@ -359,32 +359,13 @@ class SpherexAgent:
             self.is_running = False
             logger.info("[AGENT] Stopping all camera threads")
             
-            # First clean up all GStreamer pipelines properly
-            for camera_id, tracker in self.camera_manager.trackers.items():
-                try:
-                    logger.info(f"[AGENT] Cleaning up resources for camera {camera_id}")
-                    tracker.cleanup()
-                except Exception as e:
-                    logger.error(f"[AGENT] Error cleaning up camera {camera_id}: {e}")
-            
             # Wait for all threads to finish
             for thread in threads:
                 thread.join(timeout=1.0)
-            
-            # Check if any threads are still alive
-            alive_threads = [t for t in threads if t.is_alive()]
-            if alive_threads:
-                logger.warning(f"[AGENT] {len(alive_threads)} threads did not terminate gracefully")
                 
             # Release all cameras
             self.camera_manager.release_all()
-            
-            # Final cleanup of any remaining windows
-            try:
-                cv2.destroyAllWindows()
-            except Exception as e:
-                logger.warning(f"[AGENT] Error destroying windows: {e}")
-                
+            cv2.destroyAllWindows()
             logger.info("[AGENT] SpherexAgent shutdown complete")
 
 
