@@ -5,12 +5,10 @@ import time
 from ultralytics import YOLO
 import shutil
 from PIL import Image, ImageFont, ImageDraw
-import multiprocessing
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
-from functools import partial
 import threading
 import queue
 from typing import Dict, Tuple, Optional, List, Callable, Any
+import torch
 
 from .config import (
     ARABIC_MAPPING,
@@ -20,7 +18,11 @@ from .config import (
 )
 
 # Use a lower resolution for license plate detection to speed up inference
+# Adjusted for Jetson Nano's memory constraints
 PLATE_DETECTION_SIZE = 480
+
+# Check for CUDA availability
+DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 def preprocess_image(image):
     """
@@ -42,19 +44,21 @@ def preprocess_image(image):
     sharpened = cv2.addWeighted(equ_bgr, 1.5, blurred, -0.5, 0)
     return sharpened
 
-# Helper functions that will be called by ProcessPoolExecutor
-def _find_plate_in_image(model_path, image):
+def find_plate_in_image(model, image):
+    """Find license plate in image using GPU-accelerated model"""
     try:
-        model = YOLO(model_path)
         # Preprocess the image before detection
         preprocessed = preprocess_image(image)
         
+        # Run inference with half precision for faster GPU processing and memory savings
         results = model.predict(
             preprocessed, 
             conf=0.25,
             iou=0.5,
             verbose=False,
-            imgsz=PLATE_DETECTION_SIZE
+            imgsz=PLATE_DETECTION_SIZE,
+            device=0 if torch.cuda.is_available() else 'cpu',  # Use GPU if available
+            half=True  # Use FP16 for faster inference on Jetson
         )
         
         if not results or len(results[0].boxes) == 0:
@@ -94,18 +98,20 @@ def _find_plate_in_image(model_path, image):
         
         return plate_img, plate_scores[best_idx], preprocessed
     except Exception as e:
-        logger.error(f"Error in _find_plate_in_image: {str(e)}")
+        logger.error(f"Error in find_plate_in_image: {str(e)}")
         return None, None, None
 
-def _recognize_plate(model_path, plate_image):
+def recognize_plate(model, plate_image):
+    """Recognize characters on license plate using GPU-accelerated model"""
     try:
-        model = YOLO(model_path)
         results = model.predict(
             plate_image, 
             conf=0.25,
             iou=0.45,
             imgsz=PLATE_DETECTION_SIZE,
-            verbose=False
+            verbose=False,
+            device=0 if torch.cuda.is_available() else 'cpu',  # Use GPU if available
+            half=True  # Use FP16 for faster inference on Jetson
         )
         
         if not results or len(results[0].boxes) == 0:
@@ -128,22 +134,25 @@ def _recognize_plate(model_path, plate_image):
         
         return license_text if license_text else None
     except Exception as e:
-        logger.error(f"Error in _recognize_plate: {str(e)}")
+        logger.error(f"Error in recognize_plate: {str(e)}")
         return None
 
 class PlateProcessor:
     """
     Processes vehicle images to detect and recognize license plates.
+    Optimized for Jetson Nano GPU.
     """
-    def __init__(self, max_workers=None):
+    def __init__(self, use_gpu=True):
         logger.info("Initializing license plate recognition model...")
         os.makedirs("models", exist_ok=True)
         os.makedirs("output/plates", exist_ok=True)
         
-        # Set default max_workers to number of CPUs
-        if max_workers is None:
-            max_workers = max(2, multiprocessing.cpu_count() - 1)
-        self.max_workers = max_workers
+        self.use_gpu = use_gpu and torch.cuda.is_available()
+        
+        if self.use_gpu:
+            logger.info(f"CUDA available. Using GPU for inference.")
+        else:
+            logger.info("CUDA not available or disabled. Using CPU for inference.")
         
         try:
             if not os.path.exists(LPR_MODEL_PATH):
@@ -154,18 +163,18 @@ class PlateProcessor:
                 shutil.copy2(source_model, LPR_MODEL_PATH)
                 logger.info("LPR model downloaded successfully")
             
-            # Initialize a local model for synchronous operations
+            # Initialize model
             self.lpr_model = YOLO(LPR_MODEL_PATH)
-            logger.info("LPR model loaded successfully")
+            
+            # Move model to GPU if available and enabled
+            if self.use_gpu:
+                # No need for explicit device setting, handled in predict() calls
+                torch.cuda.empty_cache()  # Clear GPU memory before loading
+                
             self.font_path = FONT_PATH
             
-            # Initialize thread pool for lighter tasks
-            self.thread_executor = ThreadPoolExecutor(max_workers=self.max_workers*2)
-            
-            # Initialize the process pool executor
-            self.process_executor = ProcessPoolExecutor(max_workers=self.max_workers)
-            
-            # Initialize a task queue for non-blocking operation
+            # Initialize thread pool for task management
+            # Using a single worker thread to manage tasks to avoid overloading the GPU
             self.task_queue = queue.Queue()
             self.results = {}
             self.results_lock = threading.Lock()
@@ -177,12 +186,19 @@ class PlateProcessor:
             self.worker_thread = threading.Thread(target=self._process_queue, daemon=True)
             self.worker_thread.start()
             
-            logger.info(f"Initialized plate processor with {self.max_workers} workers")
+            # Configure for Jetson Nano - optimize memory usage
+            if self.use_gpu:
+                # Set smaller batch size to avoid OOM errors
+                self.batch_size = 1
+                logger.info(f"Initialized plate processor with GPU acceleration")
+            else:
+                self.batch_size = 1
+                logger.info(f"Initialized plate processor with CPU processing")
             
         except Exception as e:
             logger.error(f"Error initializing license plate model: {str(e)}")
             raise
-
+            
     def __del__(self):
         # Clean up resources
         self.shutdown()
@@ -195,12 +211,6 @@ class PlateProcessor:
         if hasattr(self, 'worker_thread') and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=1.0)
             
-        if hasattr(self, 'process_executor'):
-            self.process_executor.shutdown(wait=False)
-            
-        if hasattr(self, 'thread_executor'):
-            self.thread_executor.shutdown(wait=False)
-            
         if hasattr(self, 'task_queue'):
             # Clear queue
             while not self.task_queue.empty():
@@ -208,6 +218,10 @@ class PlateProcessor:
                     self.task_queue.get_nowait()
                 except queue.Empty:
                     break
+                    
+        # Clean up GPU memory
+        if self.use_gpu:
+            torch.cuda.empty_cache()
 
     def _get_next_task_id(self):
         """Generate a unique task ID"""
@@ -255,6 +269,10 @@ class PlateProcessor:
                 # Mark task as done
                 self.task_queue.task_done()
                 
+                # Give GPU a moment to recover if needed
+                if self.use_gpu:
+                    time.sleep(0.01)
+                
             except Exception as e:
                 logger.error(f"Error in processing queue: {str(e)}")
                 # Small sleep to prevent tight loop in case of recurring errors
@@ -268,12 +286,12 @@ class PlateProcessor:
                 logger.warning("Empty image provided to process_image_worker")
                 return None, None
             
-            # Use synchronous processing but in background thread
-            plate_image, _, _ = _find_plate_in_image(LPR_MODEL_PATH, image)
+            # Use GPU-optimized processing
+            plate_image, _, _ = find_plate_in_image(self.lpr_model, image)
             if plate_image is None:
                 return None, None
                 
-            plate_text = _recognize_plate(LPR_MODEL_PATH, plate_image)
+            plate_text = recognize_plate(self.lpr_model, plate_image)
             if plate_text is None:
                 return None, None
                 
@@ -293,62 +311,14 @@ class PlateProcessor:
     def find_best_plate_in_image(self, image):
         """
         Synchronous method to find the best license plate in an image.
-        Maintains backwards compatibility with existing code.
         """
         if image is None:
             logger.warning("Empty image provided to find_best_plate_in_image")
             return None
             
         try:
-            # Preprocess the image before detection
-            preprocessed = preprocess_image(image)
-            
-            results = self.lpr_model.predict(
-                preprocessed, 
-                conf=0.25,
-                iou=0.5,
-                verbose=False,
-                imgsz=PLATE_DETECTION_SIZE
-            )
-            
-            if not results or len(results[0].boxes) == 0:
-                logger.info("No license plate detected in the image")
-                return None
-
-            plate_boxes = []
-            plate_scores = []
-            lpr_class_names = self.lpr_model.names
-            
-            for box, cls, conf in zip(
-                results[0].boxes.xyxy, 
-                results[0].boxes.cls, 
-                results[0].boxes.conf
-            ):
-                if lpr_class_names[int(cls)] == "License Plate":
-                    plate_boxes.append(box.cpu().numpy())
-                    plate_scores.append(float(conf))
-
-            if not plate_boxes:
-                logger.info("No license plates found in the detections")
-                return None
-
-            plate_boxes = np.array(plate_boxes)
-            plate_scores = np.array(plate_scores)
-            best_idx = np.argmax(plate_scores)
-            if plate_scores[best_idx] < 0.6:
-                logger.info(f"Best plate detection has low confidence: {plate_scores[best_idx]:.2f}")
-                return None
-
-            h, w = preprocessed.shape[:2]
-            x1, y1, x2, y2 = plate_boxes[best_idx]
-            pad_x = (x2 - x1) * 0.1
-            pad_y = (y2 - y1) * 0.1
-            x1 = max(0, int(x1 - pad_x))
-            y1 = max(0, int(y1 - pad_y))
-            x2 = min(w, int(x2 + pad_x))
-            y2 = min(h, int(y2 + pad_y))
-            plate_img = preprocessed[y1:y2, x1:x2]
-            logger.info(f"License plate detected with confidence: {plate_scores[best_idx]:.2f}")
+            # Use the GPU-optimized function
+            plate_img, _, _ = find_plate_in_image(self.lpr_model, image)
             return plate_img
 
         except Exception as e:
@@ -358,45 +328,13 @@ class PlateProcessor:
     def recognize_plate(self, plate_image):
         """
         Synchronous method to recognize text on a license plate.
-        Maintains backwards compatibility with existing code.
         """
         if plate_image is None:
             logger.warning("Empty plate image provided to recognize_plate")
             return None
             
         try:
-            results = self.lpr_model.predict(
-                plate_image, 
-                conf=0.25,
-                iou=0.45,
-                imgsz=PLATE_DETECTION_SIZE,
-                verbose=False
-            )
-            
-            if not results or len(results[0].boxes) == 0:
-                logger.info("No characters detected on license plate")
-                return None
-
-            lpr_class_names = self.lpr_model.names
-            boxes_and_classes = [
-                (float(box[0]), float(box[2]), lpr_class_names[int(cls)], conf)
-                for box, cls, conf in zip(
-                    results[0].boxes.xyxy,
-                    results[0].boxes.cls,
-                    results[0].boxes.conf,
-                )
-            ]
-            boxes_and_classes.sort(key=lambda b: b[0])
-            unmapped_chars = [
-                cls for _, _, cls, _ in boxes_and_classes if cls in ARABIC_MAPPING
-            ]
-            license_text = "".join([ARABIC_MAPPING.get(c, c) for c in unmapped_chars if c in ARABIC_MAPPING])
-            if license_text:
-                logger.info(f"License plate recognized: {license_text}")
-                return license_text
-            else:
-                logger.info("No valid characters found on license plate")
-                return None
+            return recognize_plate(self.lpr_model, plate_image)
 
         except Exception as e:
             logger.error(f"Error recognizing license plate: {str(e)}")
@@ -436,13 +374,6 @@ class PlateProcessor:
         """
         Draw ROI visualization on the image for gate entry logging.
         If no ROI is available, returns the original image.
-        
-        Args:
-            image (numpy.ndarray): The input image
-            roi_polygon (numpy.ndarray, optional): ROI polygon points. If None, returns the original image.
-        
-        Returns:
-            numpy.ndarray: Image with ROI drawn
         """
         if image is None:
             return None
@@ -472,7 +403,7 @@ class PlateProcessor:
     def process_vehicle_image(self, vehicle_image, save_path=None):
         """
         Synchronous method for processing a vehicle image and extracting the license plate.
-        Maintains backwards compatibility with existing code.
+        Uses GPU if available.
         """
         try:
             # Preprocess the entire vehicle image before processing the license plate
