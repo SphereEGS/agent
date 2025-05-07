@@ -628,10 +628,17 @@ class VehicleTracker:
             
             # Display the visualization frame in a camera-specific window
             window_name = f'Detections - {self.camera_id}'
-            cv2.imshow(window_name, vis_frame)
+            
+            # Resize the visualization frame to make it larger
+            display_scale = 1.5  # Increase this value to make the frame larger
+            display_width = int(vis_frame.shape[1] * display_scale)
+            display_height = int(vis_frame.shape[0] * display_scale)
+            display_frame = cv2.resize(vis_frame, (display_width, display_height))
+            
+            cv2.imshow(window_name, display_frame)
             cv2.waitKey(1)
             
-            # Return the visualization frame
+            # Return the original visualization frame
             return True, vis_frame
 
         except Exception as e:
