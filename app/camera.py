@@ -143,8 +143,8 @@ class InputStream:
                 # Streaming source (RTSP/RTMP/HTTP)
                 if source.startswith("rtsp://"):
                     # RTSP-specific optimized pipeline for DeepStream
-                    source_element = f"rtspsrc location={source} latency=0 buffer-mode=auto ! rtph264depay ! h264parse"
-                    
+                    source_element = ( f"rtspsrc location={source} latency=0 buffer-mode=auto ! rtph264depay ! h264parse"
+                     f"drop-on-latency=true ! rtph264depay ! h264parse ! ")
                     # Add hardware decoding if CUDA is available
                     if self.cuda_available:
                         source_element += " ! nvv4l2decoder enable-max-performance=1 ! nvvidconv"
@@ -236,16 +236,11 @@ class InputStream:
             raise RuntimeError(f"Failed to create DeepStream pipeline: {str(e)}")
 
     def _on_new_sample(self, appsink):
-        """Callback for new frame from the DeepStream pipeline"""
         try:
-            # Get the sample from appsink
             sample = appsink.emit("pull-sample")
             if sample:
-                # Get the buffer
                 buf = sample.get_buffer()
-                # Get caps
                 caps = sample.get_caps()
-                # Get buffer data
                 success, map_info = buf.map(Gst.MapFlags.READ)
                 if success:
                     # Get frame dimensions from caps
@@ -253,35 +248,45 @@ class InputStream:
                     width = structure.get_value("width")
                     height = structure.get_value("height")
                     
-                    # Convert to numpy array (suitable for OpenCV)
-                    frame = np.ndarray(
-                        shape=(height, width, 3),
-                        dtype=np.uint8,
-                        buffer=map_info.data
-                    )
+                    # Add safety check for dimensions
+                    if width <= 0 or height <= 0:
+                        logger.error(f"[CAMERA:{self.camera_id}] Invalid dimensions: {width}x{height}")
+                        buf.unmap(map_info)
+                        return Gst.FlowReturn.ERROR
                     
-                    # Resize if needed
-                    if self.resize_dimensions:
-                        try:
-                            frame = cv2.resize(frame, self.resize_dimensions, interpolation=cv2.INTER_NEAREST)
-                        except Exception as e:
-                            logger.error(f"[CAMERA:{self.camera_id}] Resize error: {str(e)}")
+                    # Add buffer size safety check
+                    expected_size = width * height * 3  # 3 channels for BGR
+                    if len(map_info.data) < expected_size:
+                        logger.error(f"[CAMERA:{self.camera_id}] Buffer too small: {len(map_info.data)} < {expected_size}")
+                        buf.unmap(map_info)
+                        return Gst.FlowReturn.ERROR
                     
-                    # Make a copy before releasing buffer
-                    frame = frame.copy()
-                    # Unmap buffer
-                    buf.unmap(map_info)
-                    
-                    # Update frame buffer
-                    with self.buffer_lock:
-                        self.buffer_index = (self.buffer_index + 1) % self.buffer_size
-                        self.frame_buffer[self.buffer_index] = frame
-                        self.latest_frame_index = self.buffer_index
-                    
-                    self.last_successful_read_time = time.time()
-                    self.frame_count += 1
-                    
-                    return Gst.FlowReturn.OK
+                    # Convert to numpy array with appropriate shape limiting
+                    try:
+                        frame = np.ndarray(
+                            shape=(min(height, len(map_info.data)//(width*3)), width, 3),
+                            dtype=np.uint8,
+                            buffer=map_info.data
+                        )
+                        
+                        # Make a deep copy before releasing buffer
+                        frame = frame.copy()
+                        buf.unmap(map_info)
+                        
+                        # Update frame buffer
+                        with self.buffer_lock:
+                            self.buffer_index = (self.buffer_index + 1) % self.buffer_size
+                            self.frame_buffer[self.buffer_index] = frame
+                            self.latest_frame_index = self.buffer_index
+                        
+                        self.last_successful_read_time = time.time()
+                        self.frame_count += 1
+                        
+                        return Gst.FlowReturn.OK
+                    except Exception as e:
+                        logger.error(f"[CAMERA:{self.camera_id}] Array creation error: {str(e)}")
+                        buf.unmap(map_info)
+                        return Gst.FlowReturn.ERROR
                 else:
                     logger.warning(f"[CAMERA:{self.camera_id}] Failed to map buffer")
             
