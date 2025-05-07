@@ -305,6 +305,11 @@ class SpherexAgent:
                 window_name = f'Detections - {camera_id}'
                 logger.info(f"[AGENT] Creating named window for {camera_id}: {window_name}")
                 cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                # Set window properties to ensure it displays fully
+                cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+                cv2.setWindowProperty(window_name, cv2.WND_PROP_ASPECT_RATIO, cv2.WINDOW_KEEPRATIO)
+                # Start with a reasonably large size
+                cv2.resizeWindow(window_name, 1280, 720)
                 
             # Start a thread for each camera
             threads = []
