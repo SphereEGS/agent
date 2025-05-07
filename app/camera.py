@@ -143,8 +143,8 @@ class InputStream:
                 # Streaming source (RTSP/RTMP/HTTP)
                 if source.startswith("rtsp://"):
                     # RTSP-specific optimized pipeline for DeepStream
-                    source_element = ( f"rtspsrc location={source} latency=0 buffer-mode=auto ! rtph264depay ! h264parse"
-                     f"drop-on-latency=true ! rtph264depay ! h264parse ! ")
+                    source_element = (f"rtspsrc location={source} latency=0 buffer-mode=auto drop-on-latency=true ! "
+                                    f"rtph264depay ! h264parse ! ")
                     # Add hardware decoding if CUDA is available
                     if self.cuda_available:
                         source_element += " ! nvv4l2decoder enable-max-performance=1 ! nvvidconv"
@@ -172,7 +172,7 @@ class InputStream:
                             rtsp_part = rtsp_part[:rtsp_part.find(marker)]
                     
                     logger.warning(f"[CAMERA:{self.camera_id}] Attempting to parse malformed RTSP URL: {rtsp_part}")
-                    source_element = f"rtspsrc location={rtsp_part} latency=0 buffer-mode=auto ! rtph264depay ! h264parse"
+                    source_element = f"rtspsrc location={rtsp_part} latency=0 buffer-mode=auto drop-on-latency=true ! rtph264depay ! h264parse ! "
                 else:
                     # Unknown source type
                     logger.error(f"[CAMERA:{self.camera_id}] Unsupported source: {source}")
