@@ -270,7 +270,7 @@ class InputStream:
                     # Convert to numpy array with appropriate shape limiting
                     try:
                         frame = np.ndarray(
-                            shape=(min(height, len(map_info.data)//(width*3)), width, 3),
+                            shape=(height, width, 3),
                             dtype=np.uint8,
                             buffer=map_info.data
                         )
