@@ -5,6 +5,7 @@ from time import sleep, time
 import cv2
 import requests
 import threading
+import numpy as np
 
 from app.camera import InputStream
 from app.config import API_BASE_URL, CAMERA_URLS, CAMERA_TYPES, GATE, PROCESS_EVERY, logger
@@ -298,6 +299,13 @@ class SpherexAgent:
         )
 
         try:
+            # Create a named window for each camera first in the main thread
+            # This helps ensure windows are properly created before threads try to use them
+            for camera_id in self.camera_manager.get_camera_ids():
+                window_name = f'Detections - {camera_id}'
+                logger.info(f"[AGENT] Creating named window for {camera_id}: {window_name}")
+                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+                
             # Start a thread for each camera
             threads = []
             for camera_id in self.camera_manager.get_camera_ids():
@@ -310,8 +318,11 @@ class SpherexAgent:
                 threads.append(thread)
                 
             # Main thread monitors keypresses for exiting
+            logger.info("[AGENT] Main thread monitoring for keypresses. Windows should be visible now.")
+            logger.info("[AGENT] If no windows appear, check for X11/display errors.")
+            empty_frame_cycle = 0
             while self.is_running:
-                key = cv2.waitKey(1) & 0xFF
+                key = cv2.waitKey(100) & 0xFF  # Increased wait time for better key detection
                 
                 # Allow quitting with 'q' key
                 if key == ord("q"):
@@ -319,12 +330,30 @@ class SpherexAgent:
                     self.is_running = False
                     break
                 
+                # Periodically call imshow in main thread to ensure windows stay responsive
+                empty_frame_cycle += 1
+                if empty_frame_cycle >= 10:  # Every ~1 second
+                    empty_frame_cycle = 0
+                    # Display a small empty frame for each window to keep it responsive
+                    for camera_id in self.camera_manager.get_camera_ids():
+                        try:
+                            window_name = f'Detections - {camera_id}'
+                            # Get the last frame if any
+                            small_frame = np.zeros((100, 100, 3), dtype=np.uint8)
+                            cv2.putText(small_frame, "Waiting...", (10, 50), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                            cv2.imshow(window_name, small_frame)
+                        except Exception as e:
+                            logger.warning(f"[AGENT] Error refreshing window {window_name}: {e}")
+                
                 sleep(0.1)  # Reduce CPU usage in main thread
 
         except KeyboardInterrupt:
             logger.info("[AGENT] Keyboard interrupt received, exiting")
         except Exception as e:
             logger.error(f"[AGENT] Unexpected error: {e}")
+            import traceback
+            logger.error(f"[AGENT] Error details: {traceback.format_exc()}")
         finally:
             # Clean up
             self.is_running = False

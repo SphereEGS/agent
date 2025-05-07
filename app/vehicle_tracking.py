@@ -849,7 +849,10 @@ class VehicleTracker:
             # Display the visualization frame in a camera-specific window
             # On Jetson, use jetson.utils for faster display if available
             try:
+                logger.info(f"[TRACKER:{self.camera_id}] Attempting to display detection window")
+                
                 if 'jetson.utils' in sys.modules:
+                    logger.info(f"[TRACKER:{self.camera_id}] Using jetson.utils for display")
                     # Use jetson.utils for faster display
                     import jetson.utils
                     import jetson.inference
@@ -860,24 +863,32 @@ class VehicleTracker:
                     
                     # Display using jetson.utils
                     window_name = f'Detections - {self.camera_id}'
+                    logger.debug(f"[TRACKER:{self.camera_id}] Window name: {window_name}")
                     jetson.utils.cudaDeviceSynchronize()
                     jetson.utils.display.render(cuda_mem, width=vis_frame.shape[1], height=vis_frame.shape[0])
                     jetson.utils.cudaDeviceSynchronize()
+                    logger.info(f"[TRACKER:{self.camera_id}] Successfully displayed using jetson.utils")
                 else:
                     # Use standard OpenCV display
                     window_name = f'Detections - {self.camera_id}'
+                    logger.info(f"[TRACKER:{self.camera_id}] Using OpenCV display with window name: {window_name}")
                     cv2.imshow(window_name, vis_frame)
-                    cv2.waitKey(1)
+                    cv2.waitKey(1) # This needs to be called to actually display the window
+                    logger.info(f"[TRACKER:{self.camera_id}] OpenCV window should be visible now")
             except Exception as e:
-                logger.error(f"[TRACKER] Display error: {str(e)}")
-                raise RuntimeError(f"Failed to display detection results: {str(e)}")
-            
+                logger.error(f"[TRACKER:{self.camera_id}] Display error: {str(e)}")
+                # Print detailed stack trace
+                import traceback
+                logger.error(f"[TRACKER:{self.camera_id}] Display error stack trace: {traceback.format_exc()}")
+                # Do not raise an exception here, as it would stop processing
+                # Just continue without the display
+                
             # Return the visualization frame
             return True, vis_frame
-
+        
         except Exception as e:
-            logger.error(f"[TRACKER] Error in detect_vehicles: {str(e)}")
-            raise RuntimeError(f"Vehicle detection failed: {str(e)}")
+            logger.error(f"[TRACKER:{self.camera_id}] Detection error: {str(e)}")
+            return False, None
 
     def _extract_vehicle_image(self, frame, box):
         """Extract vehicle image from frame using bounding box"""
