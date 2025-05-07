@@ -299,23 +299,9 @@ class SpherexAgent:
         )
 
         try:
-            # Create a named window for each camera first in the main thread
-            # This helps ensure windows are properly created before threads try to use them
-            for camera_id in self.camera_manager.get_camera_ids():
-                window_name = f'Detections - {camera_id}'
-                logger.info(f"[AGENT] Creating named window for {camera_id}: {window_name}")
-                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-                
-                # Set proper initial window size for Jetson display
-                # Default to 1280x720 for initial size, will be adjusted with actual frames later
-                cv2.resizeWindow(window_name, 1280, 720)
-                
-                # Move windows to prevent overlapping (offset each window)
-                window_index = list(self.camera_manager.get_camera_ids()).index(camera_id)
-                x_pos = 50 + (window_index * 30)  # Offset each window a bit
-                y_pos = 50 + (window_index * 30)
-                cv2.moveWindow(window_name, x_pos, y_pos)
-                
+            # When using DeepStream and GStreamer display, we should not create OpenCV windows
+            # as they'll be created by the GStreamer pipeline in vehicle_tracking.py
+            
             # Start a thread for each camera
             threads = []
             for camera_id in self.camera_manager.get_camera_ids():
@@ -328,33 +314,22 @@ class SpherexAgent:
                 threads.append(thread)
                 
             # Main thread monitors keypresses for exiting
-            logger.info("[AGENT] Main thread monitoring for keypresses. Windows should be visible now.")
-            logger.info("[AGENT] If no windows appear, check for X11/display errors.")
-            empty_frame_cycle = 0
+            logger.info("[AGENT] Main thread monitoring for keypresses. Windows should be visible via GStreamer/DeepStream.")
+            
             while self.is_running:
-                key = cv2.waitKey(100) & 0xFF  # Increased wait time for better key detection
-                
-                # Allow quitting with 'q' key
-                if key == ord("q"):
-                    logger.info("[AGENT] User pressed 'q', exiting")
-                    self.is_running = False
-                    break
-                
-                # Periodically call imshow in main thread to ensure windows stay responsive
-                empty_frame_cycle += 1
-                if empty_frame_cycle >= 10:  # Every ~1 second
-                    empty_frame_cycle = 0
-                    # Display a small empty frame for each window to keep it responsive
-                    for camera_id in self.camera_manager.get_camera_ids():
-                        try:
-                            window_name = f'Detections - {camera_id}'
-                            # Get the last frame if any
-                            small_frame = np.zeros((100, 100, 3), dtype=np.uint8)
-                            cv2.putText(small_frame, "Waiting...", (10, 50), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                            cv2.imshow(window_name, small_frame)
-                        except Exception as e:
-                            logger.warning(f"[AGENT] Error refreshing window {window_name}: {e}")
+                # We can't use cv2.waitKey with DeepStream, so we'll check for keyboard input directly
+                try:
+                    # Non-blocking keyboard check
+                    import sys, select
+                    if select.select([sys.stdin], [], [], 0.1)[0]:
+                        key = sys.stdin.read(1)
+                        if key.lower() == 'q':
+                            logger.info("[AGENT] User pressed 'q', exiting")
+                            self.is_running = False
+                            break
+                except Exception as e:
+                    # Fall back to sleep if keyboard check fails
+                    pass
                 
                 sleep(0.1)  # Reduce CPU usage in main thread
 
