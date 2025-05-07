@@ -7,6 +7,8 @@ import os
 import os.path as osp
 from collections import defaultdict
 from ultralytics import YOLO
+import sys
+import torch
 
 from .config import logger, YOLO_MODEL_PATH
 from .lpr_model import PlateProcessor
@@ -24,6 +26,9 @@ class VehicleTracker:
             # Ensure models directory exists
             os.makedirs("models", exist_ok=True)
             
+            # Setup GPU acceleration if available
+            self.gpu_available = self._setup_gpu()
+            
             # Use absolute path for model
             model_path = osp.abspath(YOLO_MODEL_PATH)
             logger.info(f"[TRACKER:{camera_id}] Loading YOLO model from: {model_path}")
@@ -33,8 +38,23 @@ class VehicleTracker:
                 raise FileNotFoundError(f"Model file not found: {model_path}")
                 
             try:
+                # Load the model with device specification
+                device = 0 if self.gpu_available else 'cpu'  # Use GPU 0 if available, otherwise CPU
                 self.model = YOLO(model_path)
-                logger.info(f"[TRACKER:{camera_id}] YOLO model loaded successfully")
+                
+                # Set device explicitly to ensure it's using the right hardware
+                if hasattr(self.model, 'to'):
+                    self.model.to(device)
+                
+                # Log additional GPU information if available
+                if self.gpu_available and hasattr(torch, 'cuda') and torch.cuda.is_available():
+                    device_name = torch.cuda.get_device_name(0)
+                    memory_allocated = torch.cuda.memory_allocated(0)
+                    memory_reserved = torch.cuda.memory_reserved(0)
+                    logger.info(f"[TRACKER:{camera_id}] Using GPU: {device_name}")
+                    logger.info(f"[TRACKER:{camera_id}] GPU memory: allocated={memory_allocated/1024**2:.2f}MB, reserved={memory_reserved/1024**2:.2f}MB")
+                
+                logger.info(f"[TRACKER:{camera_id}] YOLO model loaded successfully on {'GPU' if self.gpu_available else 'CPU'}")
             except Exception as e:
                 logger.error(f"[TRACKER:{camera_id}] Error loading YOLO model: {str(e)}")
                 raise
@@ -102,6 +122,69 @@ class VehicleTracker:
         except Exception as e:
             logger.error(f"[TRACKER:{camera_id}] Error in VehicleTracker initialization: {str(e)}")
             raise
+
+    def _setup_gpu(self):
+        """Setup and verify GPU availability for Jetson Nano and other CUDA devices"""
+        try:
+            # First check via OpenCV CUDA support
+            cuda_device_count = cv2.cuda.getCudaEnabledDeviceCount()
+            if cuda_device_count > 0:
+                # Initialize CUDA context
+                cv2.cuda.setDevice(0)
+                try:
+                    # Create a small test operation to verify CUDA is working
+                    test_mat = cv2.cuda_GpuMat((10, 10), cv2.CV_8UC3)
+                    test_mat.upload(np.zeros((10, 10, 3), dtype=np.uint8))
+                    test_mat.release()
+                    logger.info(f"[TRACKER:{self.camera_id}] OpenCV CUDA acceleration verified working")
+                except Exception as e:
+                    logger.warning(f"[TRACKER:{self.camera_id}] OpenCV CUDA initialized but test operation failed: {str(e)}")
+                    # Continue to try other detection methods
+            
+            # Check via PyTorch
+            if hasattr(torch, 'cuda') and torch.cuda.is_available():
+                device_count = torch.cuda.device_count()
+                if device_count > 0:
+                    device_name = torch.cuda.get_device_name(0)
+                    logger.info(f"[TRACKER:{self.camera_id}] CUDA available via PyTorch with device: {device_name}")
+                    return True
+            
+            # Jetson-specific checks
+            if os.path.exists('/dev/nvhost-ctrl'):
+                logger.info(f"[TRACKER:{self.camera_id}] Detected Jetson hardware via /dev/nvhost-ctrl")
+                # Apply Jetson-specific optimizations
+                try:
+                    import jetson.utils
+                    logger.info(f"[TRACKER:{self.camera_id}] Jetson utils package detected")
+                except ImportError:
+                    logger.warning(f"[TRACKER:{self.camera_id}] Running on Jetson but jetson.utils not available")
+                return True
+                
+            if os.path.exists('/usr/local/cuda'):
+                logger.info(f"[TRACKER:{self.camera_id}] CUDA installation detected at /usr/local/cuda")
+                return True
+                
+            # Check for Jetson-specific environment via model file
+            if os.path.exists('/proc/device-tree/model'):
+                try:
+                    with open('/proc/device-tree/model', 'r') as f:
+                        model = f.read()
+                        if 'Jetson' in model:
+                            logger.info(f"[TRACKER:{self.camera_id}] Detected Jetson Nano hardware from device-tree model")
+                            return True
+                except Exception as e:
+                    logger.debug(f"[TRACKER:{self.camera_id}] Error reading device model: {str(e)}")
+            
+            # If we get here and OpenCV detected CUDA, we can still use it
+            if cuda_device_count > 0:
+                logger.info(f"[TRACKER:{self.camera_id}] GPU acceleration available via OpenCV CUDA")
+                return True
+                
+            logger.error(f"[TRACKER:{self.camera_id}] No CUDA-capable GPU detected")
+            raise RuntimeError("GPU acceleration is required but no CUDA device is available")
+        except Exception as e:
+            logger.error(f"[TRACKER:{self.camera_id}] Error setting up GPU: {str(e)}")
+            raise RuntimeError(f"Failed to initialize GPU acceleration: {str(e)}")
 
     def _load_roi_polygon(self, config_path):
         """Load ROI polygon from config file and scale it to match the current frame size."""
@@ -356,7 +439,7 @@ class VehicleTracker:
                 self.frame_buffer[track_id].pop(0)
 
     def _calculate_image_quality(self, image):
-        """Calculate image quality/clarity score based on Laplacian variance"""
+        """Calculate image quality/clarity score based on Laplacian variance with GPU acceleration and CPU fallback"""
         try:
             # Convert to grayscale
             if len(image.shape) == 3:
@@ -364,10 +447,38 @@ class VehicleTracker:
             else:
                 gray = image
                 
-            # Calculate Laplacian variance - measure of focus/clarity
-            laplacian = cv2.Laplacian(gray, cv2.CV_64F)
-            score = laplacian.var()
-            
+            # Try GPU calculation first if available
+            if self.gpu_available:
+                try:
+                    # Upload to GPU
+                    gpu_gray = cv2.cuda_GpuMat()
+                    gpu_gray.upload(gray)
+                    
+                    # GPU Laplacian
+                    gpu_laplacian = cv2.cuda.createLaplacianFilter(cv2.CV_64F, 1)
+                    gpu_result = gpu_laplacian.apply(gpu_gray)
+                    
+                    # Download result
+                    laplacian = gpu_result.download()
+                    score = laplacian.var()
+                    
+                    # Release GPU resources
+                    gpu_gray.release()
+                    gpu_result.release()
+                    
+                    logger.debug(f"[TRACKER:{self.camera_id}] Image quality calculated using GPU")
+                except Exception as e:
+                    logger.warning(f"[TRACKER:{self.camera_id}] GPU calculation failed, falling back to CPU: {str(e)}")
+                    # Fall back to CPU
+                    laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+                    score = laplacian.var()
+                    logger.debug(f"[TRACKER:{self.camera_id}] Image quality calculated using CPU fallback")
+            else:
+                # CPU calculation
+                laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+                score = laplacian.var()
+                logger.debug(f"[TRACKER:{self.camera_id}] Image quality calculated using CPU")
+                
             # Calculate histogram distribution - well-exposed images have good distribution
             hist = cv2.calcHist([gray], [0], None, [256], [0, 256])
             hist_std = np.std(hist)
@@ -387,8 +498,9 @@ class VehicleTracker:
                 
             return combined_score
         except Exception as e:
-            logger.error(f"[TRACKER] Error calculating image quality: {str(e)}")
-            return 0
+            logger.error(f"[TRACKER:{self.camera_id}] Error calculating image quality: {str(e)}")
+            # Return a default score rather than failing completely
+            return 50.0  # Return a reasonable middle value as fallback
 
     def _cleanup_stale_vehicles(self):
         """Remove vehicles that haven't been seen recently"""
@@ -444,8 +556,26 @@ class VehicleTracker:
         if self.frame_counter % self.frame_skip != 0:
             return False, False
         
-        # Apply foreground mask
-        fgmask = self.background_model.apply(frame)
+        # Verify GPU is available
+        if not self.gpu_available:
+            logger.error("[TRACKER] GPU required for motion detection but not available")
+            raise RuntimeError("GPU acceleration required for motion detection")
+            
+        # Use GPU for background subtraction
+        try:
+            # Upload frame to GPU
+            gpu_frame = cv2.cuda_GpuMat()
+            gpu_frame.upload(frame)
+            
+            # Use CPU for background subtraction since OpenCV CUDA doesn't have a direct equivalent
+            # This is the only CPU operation we allow, as it can't be done on GPU with OpenCV CUDA
+            fgmask = self.background_model.apply(frame)
+            
+            # Release GPU resources
+            gpu_frame.release()
+        except Exception as e:
+            logger.error(f"[TRACKER] Background subtraction failed: {str(e)}")
+            raise RuntimeError(f"Failed to perform background subtraction: {str(e)}")
         
         # Apply morphological operations to remove noise
         kernel = np.ones((5, 5), np.uint8)
@@ -486,7 +616,7 @@ class VehicleTracker:
         return False, False
 
     def detect_vehicles(self, frame):
-        """Detect and track vehicles in frame, with CPU optimization using trigger system."""
+        """Detect and track vehicles in frame, with strict GPU requirement."""
         if frame is None:
             logger.warning("[TRACKER] Received None frame for detection")
             return False, None
@@ -528,67 +658,149 @@ class VehicleTracker:
             
             # Only run detection if we should process this frame
             if should_process:
-                # Run detection
-                logger.debug("[TRACKER] Running YOLO detection and tracking")
-                results = self.model.track(
-                    frame,
-                    persist=True,
-                    classes=list(VEHICLE_CLASSES.keys()),
-                    conf=0.3,
-                    iou=0.45,
-                    verbose=False
-                )
+                # Check GPU availability but with fallback
+                if not self.gpu_available:
+                    logger.warning(f"[TRACKER:{self.camera_id}] GPU is not available but will attempt to use CPU")
                 
-                # Process detections if we have any
-                if len(results) > 0 and hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
-                    try:
-                        boxes = results[0].boxes.xyxy.cpu().numpy()
-                        track_ids = results[0].boxes.id.int().cpu().tolist()
-                        class_ids = results[0].boxes.cls.int().cpu().tolist()
-                        
-                        logger.debug(f"[TRACKER] Detected {len(track_ids)} vehicles: {dict(zip(track_ids, [VEHICLE_CLASSES.get(c, 'unknown') for c in class_ids]))}")
-                        
-                        # Process each detected vehicle
-                        vehicles_in_roi = 0
-                        vehicles_processed_for_plates = 0
-                        
-                        for box, track_id, class_id in zip(boxes, track_ids, class_ids):
-                            if class_id not in VEHICLE_CLASSES:
-                                continue
+                try:
+                    # For Jetson Nano, reduce resolution if frame is large
+                    # This helps with inference speed
+                    h, w = frame.shape[:2]
+                    if h > 720 or w > 1280:
+                        try:
+                            if self.gpu_available:
+                                # GPU-accelerated resize
+                                scale_factor = min(720 / h, 1280 / w)
+                                new_h, new_w = int(h * scale_factor), int(w * scale_factor)
+                                gpu_frame = cv2.cuda_GpuMat()
+                                gpu_frame.upload(frame)
+                                gpu_resized = cv2.cuda.resize(gpu_frame, (new_w, new_h))
+                                scaled_frame = gpu_resized.download()
+                                gpu_frame.release()
+                                gpu_resized.release()
+                                logger.debug(f"[TRACKER:{self.camera_id}] Resized frame from {w}x{h} to {new_w}x{new_h} using GPU")
+                            else:
+                                # CPU fallback resize
+                                scale_factor = min(720 / h, 1280 / w)
+                                new_h, new_w = int(h * scale_factor), int(w * scale_factor)
+                                scaled_frame = cv2.resize(frame, (new_w, new_h))
+                                logger.debug(f"[TRACKER:{self.camera_id}] Resized frame from {w}x{h} to {new_w}x{new_h} using CPU")
+                        except Exception as e:
+                            logger.warning(f"[TRACKER:{self.camera_id}] Frame resize failed: {str(e)}, using original size")
+                            scaled_frame = frame
+                    else:
+                        scaled_frame = frame
+                except Exception as e:
+                    logger.warning(f"[TRACKER:{self.camera_id}] Preprocessing failed: {str(e)}, using original frame")
+                    scaled_frame = frame
+                
+                # Run detection with optimizations for Jetson Nano
+                logger.debug(f"[TRACKER:{self.camera_id}] Running YOLO detection and tracking")
+                
+                try:
+                    # Always use half precision for faster inference if GPU is available
+                    half_precision = self.gpu_available
+                    
+                    # Run the model with error handling
+                    results = self.model.track(
+                        scaled_frame,
+                        persist=True,
+                        classes=list(VEHICLE_CLASSES.keys()),
+                        conf=0.3,
+                        iou=0.45,
+                        half=half_precision,
+                        verbose=False,
+                        device=0 if self.gpu_available else 'cpu'  # Explicitly set device
+                    )
+                    
+                    # Process detections if we have any valid results
+                    if len(results) > 0:
+                        # Check if tracking IDs are available
+                        if hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
+                            try:
+                                # Get detections
+                                boxes = results[0].boxes.xyxy.cpu().numpy()
+                                track_ids = results[0].boxes.id.int().cpu().tolist()
+                                class_ids = results[0].boxes.cls.int().cpu().tolist()
                                 
-                            # Check if vehicle is in ROI
-                            is_in_roi = self._is_vehicle_in_roi(box)
-                            
-                            # Update vehicle state for tracking
-                            self._update_vehicle_state(track_id, frame, box)
-                            
-                            # Only process license plates for vehicles in ROI
-                            if is_in_roi:
-                                vehicles_in_roi += 1
-                                # Keep processing active when vehicles are in ROI
-                                self.last_activity_time = time.time()
+                                # If we used a scaled frame, adjust boxes back to original frame size
+                                if scaled_frame is not frame and scaled_frame.shape[:2] != frame.shape[:2]:
+                                    h_ratio = frame.shape[0] / scaled_frame.shape[0]
+                                    w_ratio = frame.shape[1] / scaled_frame.shape[1]
+                                    for i in range(len(boxes)):
+                                        boxes[i][0] *= w_ratio  # x1
+                                        boxes[i][1] *= h_ratio  # y1
+                                        boxes[i][2] *= w_ratio  # x2
+                                        boxes[i][3] *= h_ratio  # y2
                                 
-                                # Only try to detect license plate if not already detected for this vehicle
-                                if track_id not in self.detected_plates and track_id in self.frame_buffer:
-                                    # Process license plate if we have enough frames buffered
-                                    if len(self.frame_buffer[track_id]) >= 3:
-                                        vehicles_processed_for_plates += 1
-                                        # Get best frame from buffer
-                                        best_frame = self._select_best_frame(self.frame_buffer[track_id])
-                                        if best_frame is not None:
-                                            # Process the plate on the best quality frame
-                                            logger.info(f"[TRACKER] Processing license plate for vehicle {track_id} using best quality frame")
-                                            self._process_plate(best_frame, track_id)
-                                        else:
-                                            logger.warning(f"[TRACKER] Could not select best frame for vehicle {track_id}")
-                        
-                        if vehicles_in_roi > 0:
-                            logger.debug(f"[TRACKER] {vehicles_in_roi} vehicles in ROI, {vehicles_processed_for_plates} processed for plates")
-                        
-                        # Draw all detections on the visualization frame
-                        vis_frame = self.visualize_detection(vis_frame, boxes, track_ids, class_ids)
-                    except Exception as e:
-                        logger.error(f"[TRACKER] Error processing detection boxes: {str(e)}")
+                                logger.debug(f"[TRACKER:{self.camera_id}] Detected {len(track_ids)} vehicles: {dict(zip(track_ids, [VEHICLE_CLASSES.get(c, 'unknown') for c in class_ids]))}")
+                                
+                                # Process each detected vehicle
+                                vehicles_in_roi = 0
+                                vehicles_processed_for_plates = 0
+                                
+                                for box, track_id, class_id in zip(boxes, track_ids, class_ids):
+                                    if class_id not in VEHICLE_CLASSES:
+                                        continue
+                                        
+                                    # Check if vehicle is in ROI
+                                    is_in_roi = self._is_vehicle_in_roi(box)
+                                    
+                                    # Update vehicle state for tracking
+                                    self._update_vehicle_state(track_id, frame, box)
+                                    
+                                    # Only process license plates for vehicles in ROI
+                                    if is_in_roi:
+                                        vehicles_in_roi += 1
+                                        # Keep processing active when vehicles are in ROI
+                                        self.last_activity_time = time.time()
+                                        
+                                        # Only try to detect license plate if not already detected for this vehicle
+                                        if track_id not in self.detected_plates and track_id in self.frame_buffer:
+                                            # Process license plate if we have enough frames buffered
+                                            if len(self.frame_buffer[track_id]) >= 3:
+                                                vehicles_processed_for_plates += 1
+                                                # Get best frame from buffer
+                                                best_frame = self._select_best_frame(self.frame_buffer[track_id])
+                                                if best_frame is not None:
+                                                    # Process the plate on the best quality frame
+                                                    logger.info(f"[TRACKER:{self.camera_id}] Processing license plate for vehicle {track_id} using best quality frame")
+                                                    self._process_plate(best_frame, track_id)
+                                                else:
+                                                    logger.warning(f"[TRACKER:{self.camera_id}] Could not select best frame for vehicle {track_id}")
+                                
+                                if vehicles_in_roi > 0:
+                                    logger.debug(f"[TRACKER:{self.camera_id}] {vehicles_in_roi} vehicles in ROI, {vehicles_processed_for_plates} processed for plates")
+                                
+                                # Draw all detections on the visualization frame
+                                vis_frame = self.visualize_detection(vis_frame, boxes, track_ids, class_ids)
+                            except Exception as e:
+                                logger.error(f"[TRACKER:{self.camera_id}] Error processing detection boxes: {str(e)}")
+                                # Not critical, continue with visualization
+                        else:
+                            # No tracking IDs available - model ran but tracking failed
+                            logger.warning(f"[TRACKER:{self.camera_id}] Detection succeeded but tracking IDs not available")
+                            
+                            # Try to still show detections without tracking
+                            try:
+                                boxes = results[0].boxes.xyxy.cpu().numpy()
+                                class_ids = results[0].boxes.cls.int().cpu().tolist()
+                                # Use sequential IDs as placeholder
+                                track_ids = list(range(len(boxes)))
+                                
+                                # Draw detections but with warning
+                                vis_frame = self.visualize_detection(vis_frame, boxes, track_ids, class_ids)
+                                cv2.putText(vis_frame, "TRACKING FAILED", (10, 90),
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                            except Exception as vis_e:
+                                logger.error(f"[TRACKER:{self.camera_id}] Error visualizing detection without tracking: {str(vis_e)}")
+                    else:
+                        logger.debug(f"[TRACKER:{self.camera_id}] No detections in this frame")
+                except Exception as e:
+                    logger.error(f"[TRACKER:{self.camera_id}] Model inference failed: {str(e)}")
+                    # Show error on visualization
+                    cv2.putText(vis_frame, "DETECTION ERROR", (10, 90),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                         
                 # Cleanup stale vehicles periodically
                 self._cleanup_stale_vehicles()
@@ -620,6 +832,14 @@ class VehicleTracker:
                 cv2.putText(vis_frame, f"Status: {auth_status}", 
                            (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, auth_color, 1)
             
+            # Add GPU info to display
+            gpu_text = "GPU" if self.gpu_available else "CPU"
+            gpu_color = (0, 255, 0) if self.gpu_available else (0, 0, 255)
+            cv2.putText(vis_frame, f"Mode: {gpu_text}", (10, 60),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+            cv2.putText(vis_frame, f"Mode: {gpu_text}", (10, 60),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, gpu_color, 1)
+            
             # If activity was just detected, show an indicator
             if activity_detected:
                 h, w = vis_frame.shape[:2]
@@ -627,16 +847,37 @@ class VehicleTracker:
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             
             # Display the visualization frame in a camera-specific window
-            window_name = f'Detections - {self.camera_id}'
-            cv2.imshow(window_name, vis_frame)
-            cv2.waitKey(1)
+            # On Jetson, use jetson.utils for faster display if available
+            try:
+                if 'jetson.utils' in sys.modules:
+                    # Use jetson.utils for faster display
+                    import jetson.utils
+                    import jetson.inference
+                    
+                    # Convert OpenCV BGR to RGBA for jetson.utils
+                    frame_rgb = cv2.cvtColor(vis_frame, cv2.COLOR_BGR2RGBA)
+                    cuda_mem = jetson.utils.cudaFromNumpy(frame_rgb)
+                    
+                    # Display using jetson.utils
+                    window_name = f'Detections - {self.camera_id}'
+                    jetson.utils.cudaDeviceSynchronize()
+                    jetson.utils.display.render(cuda_mem, width=vis_frame.shape[1], height=vis_frame.shape[0])
+                    jetson.utils.cudaDeviceSynchronize()
+                else:
+                    # Use standard OpenCV display
+                    window_name = f'Detections - {self.camera_id}'
+                    cv2.imshow(window_name, vis_frame)
+                    cv2.waitKey(1)
+            except Exception as e:
+                logger.error(f"[TRACKER] Display error: {str(e)}")
+                raise RuntimeError(f"Failed to display detection results: {str(e)}")
             
             # Return the visualization frame
             return True, vis_frame
 
         except Exception as e:
             logger.error(f"[TRACKER] Error in detect_vehicles: {str(e)}")
-            return False, None
+            raise RuntimeError(f"Vehicle detection failed: {str(e)}")
 
     def _extract_vehicle_image(self, frame, box):
         """Extract vehicle image from frame using bounding box"""
@@ -650,12 +891,33 @@ class VehicleTracker:
             y1 = max(0, y1 - pad_y)
             x2 = min(frame.shape[1], x2 + pad_x)
             y2 = min(frame.shape[0], y2 + pad_y)
-            # Extract the vehicle image
-            vehicle_img = frame[y1:y2, x1:x2]
-            return vehicle_img
+            
+            # Verify GPU is available
+            if not self.gpu_available:
+                logger.error("[TRACKER] GPU required for vehicle extraction but not available")
+                raise RuntimeError("GPU acceleration required for vehicle extraction")
+            
+            # Extract using GPU - no fallbacks to CPU
+            try:
+                # Upload to GPU
+                gpu_frame = cv2.cuda_GpuMat()
+                gpu_frame.upload(frame)
+                
+                # Extract ROI on GPU
+                gpu_vehicle = gpu_frame.colRange(x1, x2).rowRange(y1, y2)
+                
+                # Download result
+                vehicle_img = gpu_vehicle.download()
+                
+                gpu_frame.release()
+                gpu_vehicle.release()
+                return vehicle_img
+            except Exception as e:
+                logger.error(f"[TRACKER] GPU extraction failed: {str(e)}")
+                raise RuntimeError(f"Failed to extract vehicle region using GPU: {str(e)}")
         except Exception as e:
             logger.error(f"[TRACKER] Error extracting vehicle image: {str(e)}")
-            return None
+            raise RuntimeError(f"Vehicle extraction failed: {str(e)}")
 
     def _process_plate(self, vehicle_img, track_id):
         """Process vehicle image to detect and recognize license plate"""
@@ -674,6 +936,8 @@ class VehicleTracker:
             if plate_text and len(plate_text) >= 3:
                 logger.info(f"[TRACKER] License plate recognized for vehicle {track_id}: {plate_text}")
                 self.detected_plates[track_id] = plate_text
+                self.last_recognized_plate = plate_text
+                self.last_plate_authorized = False  # Default to not authorized
                 return
                 
             self.plate_attempts[track_id] += 1
