@@ -21,10 +21,6 @@ class VehicleTracker:
             # Store camera ID for display and logging
             self.camera_id = camera_id
             
-            # Display settings - set to False by default for Jetson compatibility
-            self.enable_display = False  # Disable display by default to avoid GStreamer errors
-            self.display_mode = "minimal"  # Options: "minimal", "none"
-            
             # Ensure models directory exists
             os.makedirs("models", exist_ok=True)
             
@@ -630,8 +626,10 @@ class VehicleTracker:
                 cv2.putText(vis_frame, "ACTIVITY DETECTED", (w//2-150, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             
-            # Handle display based on settings - safer approach for Jetson
-            self._safe_display(vis_frame)
+            # Display the visualization frame in a camera-specific window
+            window_name = f'Detections - {self.camera_id}'
+            cv2.imshow(window_name, vis_frame)
+            cv2.waitKey(1)
             
             # Return the visualization frame
             return True, vis_frame
@@ -701,33 +699,3 @@ class VehicleTracker:
     def get_detected_plate(self, track_id):
         """Get the detected plate for a specific vehicle ID"""
         return self.detected_plates.get(track_id, None)
-
-    def _safe_display(self, frame):
-        """Safe display method that won't crash on Jetson devices"""
-        # Skip display if disabled
-        if not self.enable_display:
-            return
-            
-        try:
-            window_name = f'Detections - {self.camera_id}'
-            
-            if self.display_mode == "none":
-                # Do nothing - completely disable display
-                return
-                
-            elif self.display_mode == "minimal":
-                # Basic display with no manipulation
-                if not hasattr(self, 'window_created'):
-                    # Use WINDOW_AUTOSIZE to avoid resizing issues
-                    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
-                    self.window_created = True
-                
-                # Display the frame directly without any processing
-                cv2.imshow(window_name, frame)
-                cv2.waitKey(1)
-                
-        except Exception as e:
-            logger.error(f"[TRACKER:{self.camera_id}] Display error: {str(e)}")
-            # Disable display on error
-            self.enable_display = False
-            logger.warning(f"[TRACKER:{self.camera_id}] Display disabled due to errors")

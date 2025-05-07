@@ -173,8 +173,8 @@ class SpherexAgent:
 
     def process_frame(self, frame, camera_id, frame_count):
         """Process a single frame from a specific camera"""
-        if frame is None:
-            logger.warning(f"[AGENT:{camera_id}] Received None frame, skipping processing")
+        if frame is None or frame.size == 0:
+            logger.warning(f"[AGENT:{camera_id}] Received invalid frame, skipping processing")
             return
 
         try:
@@ -210,102 +210,109 @@ class SpherexAgent:
                         prev_plate_count = len(tracker.detected_plates)
                         prev_plates = set(tracker.detected_plates.items())
 
-                        # Detect vehicles and license plates
-                        detected, vis_frame = tracker.detect_vehicles(frame)
+                        # Ensure frame is valid before passing to detect_vehicles
+                        if frame is not None and frame.size > 0:
+                            # Detect vehicles and license plates
+                            detected, vis_frame = tracker.detect_vehicles(frame)
 
-                        if detected and vis_frame is not None:
-                            # Use the visualization frame that comes from the tracker
-                            display_frame = vis_frame
+                            if detected and vis_frame is not None:
+                                # Use the visualization frame that comes from the tracker
+                                display_frame = vis_frame
 
-                            # Only log plate info if there's a change in detected plates
-                            curr_plates = set(tracker.detected_plates.items())
-                            new_plates = curr_plates - prev_plates
+                                # Only log plate info if there's a change in detected plates
+                                curr_plates = set(tracker.detected_plates.items())
+                                new_plates = curr_plates - prev_plates
 
-                            if new_plates:
-                                logger.info(
-                                    f"[AGENT:{camera_id}] Newly detected plates: {dict(new_plates)}"
-                                )
-
-                                # Process newly detected plates
-                                for track_id, plate_text in new_plates:
-                                    # Check if plate is authorized
-                                    is_authorized = self.cache.is_authorized(
-                                        plate_text
-                                    )
-                                    timestamp = datetime.now().strftime(
-                                        "%Y-%m-%d %H:%M:%S"
-                                    )
-
-                                    # Update the authorization status for display
-                                    # Make sure the vehicle tracker's last recognized plate is updated
-                                    tracker.last_recognized_plate = plate_text
-                                    tracker.last_plate_authorized = is_authorized
+                                if new_plates:
                                     logger.info(
-                                        f"[AGENT:{camera_id}] Updated last_recognized_plate to {plate_text}, auth: {is_authorized}"
+                                        f"[AGENT:{camera_id}] Newly detected plates: {dict(new_plates)}"
                                     )
 
-                                    # Log the detection
-                                    auth_status = (
-                                        "Authorized"
-                                        if is_authorized
-                                        else "Not Authorized"
-                                    )
-                                    logger.info(
-                                        f"[AGENT:{camera_id}] [{timestamp}] Vehicle {track_id} with plate: {plate_text} - {auth_status}"
-                                    )
-
-                                    # Handle gate control
-                                    if is_authorized:
-                                        logger.info(
-                                            f"[GATE] Opening gate for authorized plate: {plate_text} detected by camera {camera_id}"
+                                    # Process newly detected plates
+                                    for track_id, plate_text in new_plates:
+                                        # Check if plate is authorized
+                                        is_authorized = self.cache.is_authorized(
+                                            plate_text
                                         )
-                                        cam_type = CAMERA_TYPES.get(camera_id, "Entry")
-                                        if cam_type.lower() == "entry":
-                                            self.gate.open_entry()
-                                            sleep(5)  # Allow time for gate to open
-                                            self.gate.close_entry()
-                                        elif cam_type.lower() == "exit":
-                                            self.gate.open_exit()
-                                            sleep(5)
-                                            self.gate.close_exit()
+                                        timestamp = datetime.now().strftime(
+                                            "%Y-%m-%d %H:%M:%S"
+                                        )
+
+                                        # Update the authorization status for display
+                                        # Make sure the vehicle tracker's last recognized plate is updated
+                                        tracker.last_recognized_plate = plate_text
+                                        tracker.last_plate_authorized = is_authorized
+                                        logger.info(
+                                            f"[AGENT:{camera_id}] Updated last_recognized_plate to {plate_text}, auth: {is_authorized}"
+                                        )
+
+                                        # Log the detection
+                                        auth_status = (
+                                            "Authorized"
+                                            if is_authorized
+                                            else "Not Authorized"
+                                        )
+                                        logger.info(
+                                            f"[AGENT:{camera_id}] [{timestamp}] Vehicle {track_id} with plate: {plate_text} - {auth_status}"
+                                        )
+
+                                        # Handle gate control
+                                        if is_authorized:
+                                            logger.info(
+                                                f"[GATE] Opening gate for authorized plate: {plate_text} detected by camera {camera_id}"
+                                            )
+                                            cam_type = CAMERA_TYPES.get(camera_id, "Entry")
+                                            if cam_type.lower() == "entry":
+                                                self.gate.open_entry()
+                                                sleep(5)  # Allow time for gate to open
+                                                self.gate.close_entry()
+                                            elif cam_type.lower() == "exit":
+                                                self.gate.open_exit()
+                                                sleep(5)
+                                                self.gate.close_exit()
+                                            else:
+                                                logger.warning(f"Unknown camera type '{cam_type}' for camera {camera_id}, defaulting to entry barrier")
+                                                self.gate.open_entry()
+                                            self.log_gate_entry(plate_text, vis_frame, 1, camera_id)
+                                            self.last_detection_time = current_time
                                         else:
-                                            logger.warning(f"Unknown camera type '{cam_type}' for camera {camera_id}, defaulting to entry barrier")
-                                            self.gate.open_entry()
-                                        self.log_gate_entry(plate_text, vis_frame, 1, camera_id)
-                                        self.last_detection_time = current_time
-                                    else:
-                                        logger.info(
-                                            f"[GATE] Not opening gate for unauthorized plate: {plate_text} detected by camera {camera_id}"
-                                        )
-                                        self.log_gate_entry(plate_text, vis_frame, 0, camera_id)
-                                        self.is_logged = True
-                            elif frame_count % 200 == 0:
-                                # Log total plate count periodically
-                                plates = tracker.detected_plates
-                                logger.info(
-                                    f"[AGENT:{camera_id}] Total plates detected: {len(plates)}"
-                                )
-                        elif vis_frame is not None:
-                            # Even if no detection, use the visualization frame which should have ROI
-                            display_frame = vis_frame
-                            if (
-                                frame_count % 50 == 0
-                            ):  # Less frequent logging for no detections
-                                logger.debug(
-                                    f"[AGENT:{camera_id}] No vehicle detections in frame {frame_count}"
-                                )
+                                            logger.info(
+                                                f"[GATE] Not opening gate for unauthorized plate: {plate_text} detected by camera {camera_id}"
+                                            )
+                                            self.log_gate_entry(plate_text, vis_frame, 0, camera_id)
+                                            self.is_logged = True
+                                elif frame_count % 200 == 0:
+                                    # Log total plate count periodically
+                                    plates = tracker.detected_plates
+                                    logger.info(
+                                        f"[AGENT:{camera_id}] Total plates detected: {len(plates)}"
+                                    )
+                            elif vis_frame is not None:
+                                # Even if no detection, use the visualization frame which should have ROI
+                                display_frame = vis_frame
+                                if (
+                                    frame_count % 50 == 0
+                                ):  # Less frequent logging for no detections
+                                    logger.debug(
+                                        f"[AGENT:{camera_id}] No vehicle detections in frame {frame_count}"
+                                    )
+                        else:
+                            logger.warning(f"[AGENT:{camera_id}] Invalid frame before detection, skipping")
 
                     except Exception as e:
                         logger.error(f"[AGENT:{camera_id}] Frame processing error: {e}")
                 
-            # Display the frame - only attempt if windows are created
-            try:
-                window_name = f'Detections - {camera_id}'
-                cv2.imshow(window_name, display_frame)
-            except Exception as e:
-                # If window display fails, log it but continue processing
-                if frame_count % 100 == 0:  # Limit log frequency
-                    logger.debug(f"[AGENT:{camera_id}] Failed to display frame: {e}")
+            # Display the frame - only attempt if frame is valid and windows are created
+            if display_frame is not None and display_frame.size > 0:
+                try:
+                    window_name = f'Detections - {camera_id}'
+                    cv2.imshow(window_name, display_frame)
+                except Exception as e:
+                    # If window display fails, log it but continue processing
+                    if frame_count % 100 == 0:  # Limit log frequency
+                        logger.debug(f"[AGENT:{camera_id}] Failed to display frame: {e}")
+            else:
+                logger.warning(f"[AGENT:{camera_id}] Invalid display frame, skipping display")
         
         except Exception as e:
             # Catch any other exceptions in the frame processing
@@ -318,9 +325,10 @@ class SpherexAgent:
         logger.info(f"[AGENT] Starting processing loop for camera {camera_id}")
         
         while self.is_running and self.processing_flags.get(camera_id, False):
+            # Explicitly pull the latest BGR frame from the DeepStream pipeline
             ret, frame, frame_count = self.camera_manager.read_frame(camera_id)
             
-            if ret:
+            if ret and frame is not None:
                 self.process_frame(frame, camera_id, frame_count)
             else:
                 logger.warning(f"[AGENT] Failed to read frame from camera {camera_id}")
