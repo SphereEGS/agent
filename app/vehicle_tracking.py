@@ -21,6 +21,10 @@ class VehicleTracker:
             # Store camera ID for display and logging
             self.camera_id = camera_id
             
+            # Display settings - set to False by default for Jetson compatibility
+            self.enable_display = False  # Disable display by default to avoid GStreamer errors
+            self.display_mode = "minimal"  # Options: "minimal", "none"
+            
             # Ensure models directory exists
             os.makedirs("models", exist_ok=True)
             
@@ -626,35 +630,10 @@ class VehicleTracker:
                 cv2.putText(vis_frame, "ACTIVITY DETECTED", (w//2-150, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             
-            # Display the visualization frame in a camera-specific window
-            window_name = f'Detections - {self.camera_id}'
+            # Handle display based on settings - safer approach for Jetson
+            self._safe_display(vis_frame)
             
-            # Use a safer approach to window creation and frame display for Jetson compatibility
-            try:
-                # Create window with WINDOW_NORMAL flag to allow resizing
-                if not hasattr(self, 'window_created'):
-                    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-                    # Set initial window size without resizing the frame
-                    cv2.resizeWindow(window_name, 960, 540)  # Safe default size
-                    self.window_created = True
-                
-                # Check for valid frame before displaying
-                if vis_frame is not None and vis_frame.size > 0:
-                    # Display original frame without resizing to avoid buffer issues
-                    cv2.imshow(window_name, vis_frame)
-                else:
-                    # Create a simple frame with text if the original is invalid
-                    info_frame = np.zeros((540, 960, 3), dtype=np.uint8)
-                    cv2.putText(info_frame, f"No valid frame - Camera {self.camera_id}", 
-                              (180, 270), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                    cv2.imshow(window_name, info_frame)
-                
-                # Use a small wait key value
-                key = cv2.waitKey(1) & 0xFF
-            except Exception as e:
-                logger.error(f"[TRACKER:{self.camera_id}] Display error: {str(e)}")
-            
-            # Return the original visualization frame
+            # Return the visualization frame
             return True, vis_frame
 
         except Exception as e:
@@ -722,3 +701,33 @@ class VehicleTracker:
     def get_detected_plate(self, track_id):
         """Get the detected plate for a specific vehicle ID"""
         return self.detected_plates.get(track_id, None)
+
+    def _safe_display(self, frame):
+        """Safe display method that won't crash on Jetson devices"""
+        # Skip display if disabled
+        if not self.enable_display:
+            return
+            
+        try:
+            window_name = f'Detections - {self.camera_id}'
+            
+            if self.display_mode == "none":
+                # Do nothing - completely disable display
+                return
+                
+            elif self.display_mode == "minimal":
+                # Basic display with no manipulation
+                if not hasattr(self, 'window_created'):
+                    # Use WINDOW_AUTOSIZE to avoid resizing issues
+                    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
+                    self.window_created = True
+                
+                # Display the frame directly without any processing
+                cv2.imshow(window_name, frame)
+                cv2.waitKey(1)
+                
+        except Exception as e:
+            logger.error(f"[TRACKER:{self.camera_id}] Display error: {str(e)}")
+            # Disable display on error
+            self.enable_display = False
+            logger.warning(f"[TRACKER:{self.camera_id}] Display disabled due to errors")
