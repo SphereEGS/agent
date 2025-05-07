@@ -21,8 +21,41 @@ from .config import (
 # Adjusted for Jetson Nano's memory constraints
 PLATE_DETECTION_SIZE = 480
 
-# Check for CUDA availability
-DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+# Enhanced CUDA availability check
+def check_cuda_available():
+    """Enhanced check for CUDA availability with Jetson-specific detection"""
+    try:
+        # Check for CUDA via torch first
+        if torch.cuda.is_available():
+            # Get device info
+            device_count = torch.cuda.device_count()
+            device_name = torch.cuda.get_device_name(0) if device_count > 0 else "Unknown"
+            logger.info(f"CUDA available with device: {device_name}")
+            return True
+            
+        # Jetson-specific checks
+        if os.path.exists('/dev/nvhost-ctrl'):
+            logger.info(f"Detected Jetson hardware via /dev/nvhost-ctrl")
+            return True
+            
+        if os.path.exists('/usr/local/cuda'):
+            logger.info(f"CUDA installation detected at /usr/local/cuda")
+            return True
+            
+        # Check via OpenCV's CUDA module
+        if hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0:
+            logger.info(f"OpenCV CUDA support available")
+            return True
+            
+        logger.warning("No CUDA capability detected through any method")
+        return False
+    except Exception as e:
+        logger.error(f"Error checking CUDA availability: {str(e)}")
+        return False
+
+# Set device based on enhanced check
+CUDA_AVAILABLE = check_cuda_available()
+DEVICE = torch.device('cuda:0' if CUDA_AVAILABLE else 'cpu')
 
 def preprocess_image(image):
     """
@@ -57,8 +90,8 @@ def find_plate_in_image(model, image):
             iou=0.5,
             verbose=False,
             imgsz=PLATE_DETECTION_SIZE,
-            device=0 if torch.cuda.is_available() else 'cpu',  # Use GPU if available
-            half=True  # Use FP16 for faster inference on Jetson
+            device=0 if CUDA_AVAILABLE else 'cpu',  # Use GPU if available
+            half=CUDA_AVAILABLE  # Use FP16 only if CUDA is available
         )
         
         if not results or len(results[0].boxes) == 0:
@@ -110,8 +143,8 @@ def recognize_plate(model, plate_image):
             iou=0.45,
             imgsz=PLATE_DETECTION_SIZE,
             verbose=False,
-            device=0 if torch.cuda.is_available() else 'cpu',  # Use GPU if available
-            half=True  # Use FP16 for faster inference on Jetson
+            device=0 if CUDA_AVAILABLE else 'cpu',  # Use GPU if available
+            half=CUDA_AVAILABLE  # Use FP16 only if CUDA is available
         )
         
         if not results or len(results[0].boxes) == 0:
@@ -147,7 +180,8 @@ class PlateProcessor:
         os.makedirs("models", exist_ok=True)
         os.makedirs("output/plates", exist_ok=True)
         
-        self.use_gpu = use_gpu and torch.cuda.is_available()
+        # Use enhanced CUDA check
+        self.use_gpu = use_gpu and CUDA_AVAILABLE
         
         if self.use_gpu:
             logger.info(f"CUDA available. Using GPU for inference.")
