@@ -80,7 +80,7 @@ class VehicleTracker:
             self.max_buffer_size = 5
             
             # Add CPU optimization attributes
-            self.processing_active = False  # Whether active detection is running
+            self.processing_active = True  # Whether active detection is running
             self.last_activity_time = 0  # Last time activity was detected
             self.cooldown_period = 5  # Seconds to wait after no activity before stopping processing
             self.idle_timeout = 30  # Seconds without activity before resetting background model
