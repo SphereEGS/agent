@@ -30,16 +30,22 @@ def preprocess_image(image):
       2. Perform histogram equalization for contrast enhancement.
       3. Convert back to BGR.
       4. Apply an unsharp mask to sharpen the image.
+      5. Apply adaptive thresholding to better handle varying lighting.
     """
     # Convert to grayscale
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    # Equalize histogram to enhance contrast
-    equ = cv2.equalizeHist(gray)
+    
+    # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization) for better contrast
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    equ = clahe.apply(gray)
+    
     # Convert back to BGR format
     equ_bgr = cv2.cvtColor(equ, cv2.COLOR_GRAY2BGR)
-    # Apply unsharp mask for sharpening
+    
+    # Apply unsharp mask for sharpening with increased strength
     blurred = cv2.GaussianBlur(equ_bgr, (0, 0), 3)
-    sharpened = cv2.addWeighted(equ_bgr, 1.5, blurred, -0.5, 0)
+    sharpened = cv2.addWeighted(equ_bgr, 1.8, blurred, -0.8, 0)
+    
     return sharpened
 
 # Helper functions that will be called by ProcessPoolExecutor
@@ -79,7 +85,7 @@ def _find_plate_in_image(model_path, image):
         plate_boxes = np.array(plate_boxes)
         plate_scores = np.array(plate_scores)
         best_idx = np.argmax(plate_scores)
-        if plate_scores[best_idx] < 0.6:
+        if plate_scores[best_idx] < 0.4:
             return None, None, None
 
         h, w = preprocessed.shape[:2]
@@ -102,7 +108,7 @@ def _recognize_plate(model_path, plate_image):
         model = YOLO(model_path)
         results = model.predict(
             plate_image, 
-            conf=0.25,
+            conf=0.2,
             iou=0.45,
             imgsz=PLATE_DETECTION_SIZE,
             verbose=False
@@ -335,7 +341,7 @@ class PlateProcessor:
             plate_boxes = np.array(plate_boxes)
             plate_scores = np.array(plate_scores)
             best_idx = np.argmax(plate_scores)
-            if plate_scores[best_idx] < 0.6:
+            if plate_scores[best_idx] < 0.4:
                 logger.info(f"Best plate detection has low confidence: {plate_scores[best_idx]:.2f}")
                 return None
 
@@ -367,7 +373,7 @@ class PlateProcessor:
         try:
             results = self.lpr_model.predict(
                 plate_image, 
-                conf=0.25,
+                conf=0.2,
                 iou=0.45,
                 imgsz=PLATE_DETECTION_SIZE,
                 verbose=False

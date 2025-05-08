@@ -572,7 +572,7 @@ class VehicleTracker:
                                         # Get best frame from buffer
                                         best_frame = self._select_best_frame(self.frame_buffer[track_id])
                                         if best_frame is not None:
-                                            # Process the plate on the best quality frame
+                                            # Process the plate on the best quality frame with lower threshold
                                             logger.info(f"[TRACKER] Processing license plate for vehicle {track_id} using best quality frame")
                                             self._process_plate(best_frame, track_id)
                                         else:
