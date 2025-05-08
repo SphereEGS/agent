@@ -311,6 +311,9 @@ class SpherexAgent:
                 )
                 thread.start()
                 threads.append(thread)
+                # Add a delay between starting camera threads to avoid resource contention
+                time.sleep(1)  # 1 second delay between camera threads
+                logger.info(f"[AGENT] Started thread for camera {camera_id}, waiting 1s before next camera")
                 
             # Main thread monitors keypresses for exiting
             while self.is_running:
