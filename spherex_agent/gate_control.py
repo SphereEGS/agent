@@ -7,7 +7,7 @@ from .spherex_suprema_ext import Gate as EmbeddedGate
 
 
 class GateControl:
-    def __init__(self, port: str | None = None):
+    def __init__(self, port: str | None = None) -> None:
         if port is None:
             port = os.getenv("GATE_SERIAL_PORT", None)
         try:
@@ -20,52 +20,52 @@ class GateControl:
             self.gate = None
         self.lock = threading.Lock()
 
-    def open(self):
+    def open(self, gate_type: str):
         with self.lock:
             if not self.gate:
                 logger.error(
-                    f"Gate {config.gate}: Gate controller not initialized"
+                    f"Gate {config.gate} ({gate_type}): Gate controller not initialized"
                 )
                 return
             try:
                 barrier = (
                     self.gate.exit_barrier
-                    if config.gate_type == "Exit"
+                    if gate_type == "Exit"
                     else self.gate.entry_barrier
                 )
                 logger.info(
-                    f"Gate {config.gate}: Opening {config.gate_type.lower()} gate"
+                    f"Gate {config.gate} ({gate_type}): Opening {gate_type.lower()} gate"
                 )
                 barrier.open()
                 logger.info(
-                    f"Gate {config.gate}: {config.gate_type} gate opened successfully"
+                    f"Gate {config.gate} ({gate_type}): {gate_type} gate opened successfully"
                 )
             except Exception as e:
                 logger.error(
-                    f"Gate {config.gate}: Error opening {config.gate_type.lower()} gate: {e}"
+                    f"Gate {config.gate} ({gate_type}): Error opening {gate_type.lower()} gate: {e}"
                 )
 
-    def close(self):
+    def close(self, gate_type: str) -> None:
         with self.lock:
             if not self.gate:
                 logger.error(
-                    f"Gate {config.gate}: Gate controller not initialized"
+                    f"Gate {config.gate} ({gate_type}): Gate controller not initialized"
                 )
                 return
             try:
                 barrier = (
                     self.gate.exit_barrier
-                    if config.gate_type == "Exit"
+                    if gate_type == "Exit"
                     else self.gate.entry_barrier
                 )
                 logger.info(
-                    f"Gate {config.gate}: Closing {config.gate_type.lower()} gate"
+                    f"Gate {config.gate} ({gate_type}): Closing {gate_type.lower()} gate"
                 )
                 barrier.close()
                 logger.info(
-                    f"Gate {config.gate}: {config.gate_type} gate closed successfully"
+                    f"Gate {config.gate} ({gate_type}): {gate_type} gate closed successfully"
                 )
             except Exception as e:
                 logger.error(
-                    f"Gate {config.gate}: Error closing {config.gate_type.lower()} gate: {e}"
+                    f"Gate {config.gate} ({gate_type}): Error closing {gate_type.lower()} gate: {e}"
                 )
