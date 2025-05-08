@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any, Generator, List, Dict
 import cv2
 import numpy as np
-from ultralytics import YOLO
+from ultralytics import YOLO  # type: ignore
 from .config import config
 from .lpr import LPR
 from .backend_sync import BackendSync
@@ -10,7 +10,7 @@ from .gate_control import GateControl
 from .logging import logger
 import os
 from collections import Counter
-import threading
+from numpy.typing import NDArray
 
 class Tracker:
     def __init__(self, gate_type: str, camera_url: str, roi_points: List[List[int]], model_path: str = "yolo11n.pt") -> None:
@@ -40,9 +40,10 @@ class Tracker:
 
     def draw_roi(self) -> List[List[int]]:
         class RoiState:
-            def __init__(self):
+            def __init__(self, gate_type: str):
                 self.points: List[List[int]] = []
                 self.drawing: bool = False
+                self.gate_type = gate_type
 
             def mouse_callback(self, event: int, x: int, y: int, flags: int, param: Any) -> None:
                 if event == cv2.EVENT_LBUTTONDOWN:
@@ -50,9 +51,9 @@ class Tracker:
                     self.drawing = True
                 elif event == cv2.EVENT_RBUTTONDOWN and len(self.points) > 2:
                     self.drawing = False
-                    cv2.setMouseCallback(f"Draw ROI ({self.gate_type})", lambda *args: None)
+                    cv2.setMouseCallback(f"Draw ROI {config.gate} ({self.gate_type})", lambda event, x, y, flags, param: None)
 
-        roi_state = RoiState()
+        roi_state = RoiState(self.gate_type)
 
         cap = cv2.VideoCapture(self.source)
         if not cap.isOpened():
@@ -85,12 +86,12 @@ class Tracker:
         self.roi_points = roi_state.points
         return roi_state.points
 
-    def track_and_capture(self) -> Generator[tuple[Any, List[tuple[int, np.ndarray]]], None, None]:
-        results = self.model.track(
+    def track_and_capture(self) -> Generator[tuple[Any, List[tuple[int, NDArray[Any]]]], None, None]:
+        results = self.model.track(  # type: ignore
             source=self.source,
             stream=True,
             persist=True,
-            classes=[2],  # Car class (COCO ID 2)
+            classes=[2],
             verbose=False,
         )
         roi_poly = np.array(self.roi_points, np.int32) if self.roi_points and len(self.roi_points) > 2 else None
@@ -174,7 +175,7 @@ class Tracker:
 
             yield display_frame, []
 
-    def _handle_unauthorized(self, track_id: int, frame: np.ndarray):
+    def _handle_unauthorized(self, track_id: int, frame: NDArray[Any]) -> None:
         vehicle = self.tracked_vehicles[track_id]
         readings = vehicle["readings"]
         if readings:
