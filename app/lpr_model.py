@@ -373,7 +373,7 @@ class PlateProcessor:
         try:
             results = self.lpr_model.predict(
                 plate_image, 
-                conf=0.2,
+                conf=0.25,
                 iou=0.45,
                 imgsz=PLATE_DETECTION_SIZE,
                 verbose=False
