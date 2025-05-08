@@ -16,10 +16,11 @@ from app.vehicle_tracking import VehicleTracker
 
 class CameraManager:
     """Manages multiple camera streams and their associated trackers"""
-    def __init__(self):
+    def __init__(self, shared_plate_processor=None):
         self.streams = {}
         self.trackers = {}
         self.frame_counts = {}
+        self.shared_plate_processor = shared_plate_processor
         
         # Initialize cameras
         for camera_id, url in CAMERA_URLS.items():
@@ -31,7 +32,8 @@ class CameraManager:
         for camera_id in CAMERA_URLS.keys():
             try:
                 self.streams[camera_id] = InputStream(camera_id)
-                self.trackers[camera_id] = VehicleTracker(camera_id)
+                # Pass the shared plate processor to each VehicleTracker
+                self.trackers[camera_id] = VehicleTracker(camera_id, plate_processor=self.shared_plate_processor)
                 logger.info(f"[MANAGER] Successfully initialized camera {camera_id} and its tracker")
             except Exception as e:
                 logger.error(f"[MANAGER] Failed to initialize camera {camera_id}: {e}")
@@ -67,11 +69,12 @@ class SpherexAgent:
         
         # Common components
         self.gate = GateControl()
+        # Create a single shared PlateProcessor for all cameras
         self.processor = PlateProcessor()
         self.cache = SyncManager()
         
-        # Camera handling
-        self.camera_manager = CameraManager()
+        # Camera handling - pass the shared processor
+        self.camera_manager = CameraManager(shared_plate_processor=self.processor)
         
         # Tracking variables
         self.last_detection_time = 0

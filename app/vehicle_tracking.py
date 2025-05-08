@@ -15,7 +15,7 @@ from .lpr_model import PlateProcessor
 VEHICLE_CLASSES = {2: 'car', 3: 'motorcycle', 5: 'bus', 7: 'truck'}
 
 class VehicleTracker:
-    def __init__(self, camera_id="main", roi_config_path=None):
+    def __init__(self, camera_id="main", roi_config_path=None, plate_processor=None):
         logger.info(f"[TRACKER:{camera_id}] Initializing vehicle detection model...")
         try:
             # Store camera ID for display and logging
@@ -69,15 +69,21 @@ class VehicleTracker:
                 
             # Initialize rest of components
             self.roi_lock = threading.Lock()
-            self.plate_processor = PlateProcessor()
+            # Use provided plate processor or create a new one
+            self.plate_processor = plate_processor if plate_processor is not None else PlateProcessor()
+            logger.info(f"[TRACKER:{camera_id}] Using {'shared' if plate_processor else 'dedicated'} plate processor")
+            
             self.tracked_vehicles = {}
             self.plate_attempts = defaultdict(int)
             self.detected_plates = {}
-            self.max_attempts = 6
+            self.max_attempts = 4
             self.vehicle_tracking_timeout = 10
             self.last_vehicle_tracking_time = {}
             self.frame_buffer = {}
-            self.max_buffer_size = 15
+            self.max_buffer_size = 10
+            
+            # Add authorized vehicles tracking
+            self.authorized_vehicles = set()  # Store IDs of authorized vehicles
             
             # Add CPU optimization attributes
             self.processing_active = False  # Whether active detection is running
@@ -331,17 +337,33 @@ class VehicleTracker:
         if not hasattr(self, 'vehicle_roi_state'):
             self.vehicle_roi_state = {}
         
-        # If vehicle was previously in ROI but now it's not, clear its detection data
+        # If vehicle was previously in ROI but now it's not, handle exit
         if track_id in self.vehicle_roi_state and self.vehicle_roi_state[track_id] == True and not is_in_roi:
-            logger.info(f"[TRACKER] Vehicle {track_id} exited ROI - clearing its detection data")
-            # Remove from detected plates when exiting ROI
+            logger.info(f"[TRACKER:{self.camera_id}] Vehicle {track_id} exited ROI")
+            
+            # Check if this was an authorized vehicle before clearing
             if track_id in self.detected_plates:
-                del self.detected_plates[track_id]
-            # Reset plate attempts counter
-            self.plate_attempts[track_id] = 0
-            # Keep last recognized plate for display but mark vehicle as exited
-            # Could optionally add: self.frame_buffer[track_id] = []
+                # If vehicle was authorized, keep it in authorized list
+                if hasattr(self, 'last_plate_authorized') and self.last_plate_authorized and track_id not in self.authorized_vehicles:
+                    logger.info(f"[TRACKER:{self.camera_id}] Adding vehicle {track_id} to authorized vehicles list")
+                    self.authorized_vehicles.add(track_id)
+            
+            # Don't remove from detected_plates if authorized
+            if track_id not in self.authorized_vehicles:
+                if track_id in self.detected_plates:
+                    del self.detected_plates[track_id]
+                # Reset plate attempts counter
+                self.plate_attempts[track_id] = 0
         
+        # If vehicle is re-entering ROI and was previously authorized, restore status
+        if is_in_roi and track_id in self.authorized_vehicles and track_id not in self.detected_plates:
+            logger.info(f"[TRACKER:{self.camera_id}] Authorized vehicle {track_id} re-entered ROI")
+            # Restore its plate info (use a placeholder if actual plate text not available)
+            self.detected_plates[track_id] = "AUTHORIZED"
+            # Update last recognized plate
+            self.last_recognized_plate = "AUTHORIZED"
+            self.last_plate_authorized = True
+            
         # Update vehicle's current ROI state
         self.vehicle_roi_state[track_id] = is_in_roi
         
@@ -354,7 +376,7 @@ class VehicleTracker:
             # Calculate image clarity score - higher is better
             clarity_score = self._calculate_image_quality(vehicle_img)
             self.frame_buffer[track_id].append((vehicle_img, clarity_score))
-            logger.debug(f"[TRACKER] Vehicle {track_id} frame quality: {clarity_score:.2f}")
+            logger.debug(f"[TRACKER:{self.camera_id}] Vehicle {track_id} frame quality: {clarity_score:.2f}")
             
             # Keep buffer at maximum size
             if len(self.frame_buffer[track_id]) > self.max_buffer_size:
@@ -400,19 +422,31 @@ class VehicleTracker:
         current_time = time.time()
         stale_ids = []
         
+        # Use a longer timeout for authorized vehicles (e.g., 3x normal timeout)
+        authorized_timeout = self.vehicle_tracking_timeout * 3
+        
         for track_id, last_time in self.last_vehicle_tracking_time.items():
-            if current_time - last_time > self.vehicle_tracking_timeout:
+            # Use longer timeout for authorized vehicles
+            timeout = authorized_timeout if track_id in self.authorized_vehicles else self.vehicle_tracking_timeout
+            if current_time - last_time > timeout:
                 stale_ids.append(track_id)
         
         for track_id in stale_ids:
             self.last_vehicle_tracking_time.pop(track_id, None)
             self.frame_buffer.pop(track_id, None)
-            # Also remove from ROI tracking state and detected plates
+            # Also remove from ROI tracking state
             if hasattr(self, 'vehicle_roi_state'):
                 self.vehicle_roi_state.pop(track_id, None)
+            
+            # Remove from authorized vehicles when truly stale
+            if track_id in self.authorized_vehicles:
+                logger.info(f"[TRACKER:{self.camera_id}] Vehicle {track_id} authorization timed out - removing from authorized list")
+                self.authorized_vehicles.remove(track_id)
+                
+            # Remove from detected plates
             self.detected_plates.pop(track_id, None)
             self.plate_attempts.pop(track_id, None)
-            logger.info(f"Vehicle {track_id} tracking timed out - all data cleared")
+            logger.info(f"[TRACKER:{self.camera_id}] Vehicle {track_id} tracking timed out - all data cleared")
 
     def _should_process_frame(self, frame):
         """Determine if this frame should be processed based on activity detection"""
