@@ -1,10 +1,10 @@
 import cv2
-from ultralytics import YOLO  # type: ignore
+from ultralytics import YOLO
 from typing import Optional, List, Any
 from .config import config
-import os
-from numpy.typing import NDArray
 from .logging import logger
+from numpy.typing import NDArray
+import os
 
 ARABIC_MAPPING = {
     "0": "٠",
@@ -51,18 +51,31 @@ ARABIC_MAPPING = {
 
 PLATE_DETECTION_SIZE = 480
 QUANTIZED_PATH = "resources/lpr_nano_openvino_model"
-
+TENSORRT_PATH = "resources/lpr_nano.engine"
 
 class LPR:
     def __init__(self) -> None:
         model_path = "resources/" + config.lpr_model
-        if os.path.exists(os.path.join(QUANTIZED_PATH, "lpr_nano.xml")):
-            self.model = YOLO(QUANTIZED_PATH, task="detect")
+        if os.path.exists(TENSORRT_PATH):
+            logger.info("Loading TensorRT LPR model for GPU acceleration...")
+            self.model = YOLO(TENSORRT_PATH, task="detect")
         else:
-            logger.info("Exporting LPR model to OpenVINO...")
-            self.model = YOLO(model_path, task="detect")
-            self.model.export(format="openvino", dynamic=True, half=True)
-            self.model = YOLO(QUANTIZED_PATH, task="detect")
+            logger.info("Exporting LPR model to TensorRT for Jetson Nano GPU...")
+            try:
+                self.model = YOLO(model_path, task="detect")
+                self.model.export(format="engine", device="0", half=True)  # GPU (device=0) with FP16
+                self.model = YOLO(TENSORRT_PATH, task="detect")
+                logger.info("TensorRT LPR model exported and loaded successfully")
+            except Exception as e:
+                logger.warning(f"Failed to export to TensorRT: {e}. Falling back to PyTorch model.")
+                self.model = YOLO(model_path, task="detect")
+                if os.path.exists(os.path.join(QUANTIZED_PATH, "lpr_nano.bin")):
+                    logger.info("Loading OpenVINO LPR model as fallback...")
+                    self.model = YOLO(QUANTIZED_PATH, task="detect")
+                else:
+                    logger.info("Exporting LPR model to OpenVINO as fallback...")
+                    self.model.export(format="openvino", dynamic=True, half=True)
+                    self.model = YOLO(QUANTIZED_PATH, task="detect")
 
     def preprocess_image(self, image: NDArray[Any]) -> NDArray[Any]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -74,7 +87,7 @@ class LPR:
 
     def find_plate(self, image: NDArray[Any]) -> Optional[NDArray[Any]]:
         preprocessed = self.preprocess_image(image)
-        results: List[Any] = self.model.predict(  # type: ignore
+        results: List[Any] = self.model.predict(
             preprocessed,
             conf=0.25,
             iou=0.5,
@@ -108,12 +121,12 @@ class LPR:
         return preprocessed[y1:y2, x1:x2]
 
     def recognize_plate(self, image: NDArray[Any]) -> Optional[str]:
+        logger.info("Recognizing plate...")
         plate_img = self.find_plate(image)
         if plate_img is None:
-            logger.info("No plate found")
             return None
 
-        results: List[Any] = self.model.predict(  # type: ignore
+        results: List[Any] = self.model.predict(
             plate_img,
             conf=0.25,
             iou=0.45,
