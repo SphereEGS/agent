@@ -1,3 +1,4 @@
+from __future__ import annotations
 import cv2
 from ultralytics import YOLO
 from typing import Optional, List, Any
@@ -63,7 +64,7 @@ class LPR:
             logger.info("Exporting LPR model to TensorRT for Jetson Nano GPU...")
             try:
                 self.model = YOLO(model_path, task="detect")
-                self.model.export(format="engine", device="0", half=True)  # GPU (device=0) with FP16
+                self.model.export(format="engine", device="cuda", half=True)
                 self.model = YOLO(TENSORRT_PATH, task="detect")
                 logger.info("TensorRT LPR model exported and loaded successfully")
             except Exception as e:

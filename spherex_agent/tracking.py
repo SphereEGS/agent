@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import Any, Generator, List, Dict
 import cv2
 import numpy as np
@@ -25,8 +26,8 @@ class Tracker:
             try:
                 self.model = YOLO(model_path, task="detect")
                 self.model.export(
-                    format="engine", device="0", half=True
-                )  # GPU (device=0) with FP16
+                    format="engine", device="cuda", half=True
+                )
                 self.model = YOLO(tensorrt_path, task="detect")
                 logger.info(
                     "TensorRT YOLO model exported and loaded successfully"
