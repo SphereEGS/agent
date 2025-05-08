@@ -1,3 +1,4 @@
+from typing import Any
 import cv2
 import argparse
 from .tracking import Tracker
@@ -7,11 +8,13 @@ import logging
 import threading
 import queue
 import json
-import numpy as np
 
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
 
-def run_tracker(tracker: Tracker, gate_type: str, frame_queue: queue.Queue):
+
+def run_tracker(
+    tracker: Tracker, gate_type: str, frame_queue: queue.Queue[Any]
+) -> None:
     try:
         for display_frame, _ in tracker.track_and_capture():
             frame_queue.put((gate_type, display_frame))
@@ -19,52 +22,65 @@ def run_tracker(tracker: Tracker, gate_type: str, frame_queue: queue.Queue):
         logger.error(f"Gate {config.gate} ({gate_type}): Tracker error: {e}")
         frame_queue.put((gate_type, None))  # Signal error
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="SphereX Agent")
-    parser.add_argument("--roi-entry", action="store_true", help="Redraw ROI for Entry gate")
-    parser.add_argument("--roi-exit", action="store_true", help="Redraw ROI for Exit gate")
+    parser.add_argument(
+        "--roi-entry", action="store_true", help="Redraw ROI for Entry gate"
+    )
+    parser.add_argument(
+        "--roi-exit", action="store_true", help="Redraw ROI for Exit gate"
+    )
     args = parser.parse_args()
 
-    frame_queue = queue.Queue()
-    trackers = []
-    updated_config = {
+    frame_queue: queue.Queue[Any] = queue.Queue()
+    trackers: list[tuple[Tracker, str]] = []
+    updated_config: dict[str, Any] = {
         "lpr_model": config.lpr_model,
         "backend_url": config.backend_url,
         "gate": config.gate,
         "entry": config.entry,
-        "exit": config.exit
+        "exit": config.exit,
     }
 
     if config.entry:
         entry_tracker = Tracker(
             gate_type="Entry",
             camera_url=config.entry["camera_url"],
-            roi_points=config.entry["roi"]
+            roi_points=config.entry["roi"],
         )
         if not config.entry["roi"] or args.roi_entry:
             new_roi = entry_tracker.draw_roi()
             updated_config["entry"]["roi"] = new_roi
-            logger.info(f"Gate {config.gate} (Entry): ROI updated in config.json")
+            logger.info(
+                f"Gate {config.gate} (Entry): ROI updated in config.json"
+            )
         trackers.append((entry_tracker, "Entry"))
 
     if config.exit:
         exit_tracker = Tracker(
             gate_type="Exit",
             camera_url=config.exit["camera_url"],
-            roi_points=config.exit["roi"]
+            roi_points=config.exit["roi"],
         )
         if not config.exit["roi"] or args.roi_exit:
             new_roi = exit_tracker.draw_roi()
             updated_config["exit"]["roi"] = new_roi
-            logger.info(f"Gate {config.gate} (Exit): ROI updated in config.json")
+            logger.info(
+                f"Gate {config.gate} (Exit): ROI updated in config.json"
+            )
         trackers.append((exit_tracker, "Exit"))
 
     with open("config.json", "w") as f:
         json.dump(updated_config, f, indent=4)
 
-    threads = []
+    threads: list[threading.Thread] = []
     for tracker, gate_type in trackers:
-        thread = threading.Thread(target=run_tracker, args=(tracker, gate_type, frame_queue), daemon=True)
+        thread = threading.Thread(
+            target=run_tracker,
+            args=(tracker, gate_type, frame_queue),
+            daemon=True,
+        )
         threads.append(thread)
         thread.start()
 
@@ -72,9 +88,13 @@ def main() -> None:
         try:
             gate_type, display_frame = frame_queue.get(timeout=1.0)
             if display_frame is None:
-                logger.error(f"Gate {config.gate} ({gate_type}): Tracker stopped unexpectedly")
+                logger.error(
+                    f"Gate {config.gate} ({gate_type}): Tracker stopped unexpectedly"
+                )
                 break
-            cv2.imshow(f"Vehicle Tracking ({gate_type})", display_frame)
+            cv2.imshow(
+                f"Vehicle Tracking {config.gate} ({gate_type})", display_frame
+            )
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
         except queue.Empty:
@@ -86,6 +106,7 @@ def main() -> None:
     for tracker, gate_type in trackers:
         cv2.destroyWindow(f"Vehicle Tracking ({gate_type})")
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()
