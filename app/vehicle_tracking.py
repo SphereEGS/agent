@@ -84,7 +84,7 @@ class VehicleTracker:
             self.last_activity_time = 0  # Last time activity was detected
             self.cooldown_period = 5  # Seconds to wait after no activity before stopping processing
             self.idle_timeout = 30  # Seconds without activity before resetting background model
-            self.frame_skip = 2  # Process only every Nth frame when in idle mode
+            self.frame_skip = 3  # Process only every Nth frame when in idle mode
             self.frame_counter = 0  # Counter for frame skipping
             self.pixel_diff_threshold = 15  # Minimum threshold for pixel-based changes
             self.area_diff_threshold = 0.03  # Percentage of frame that needs to change
@@ -93,6 +93,11 @@ class VehicleTracker:
             self.roi_activity_only = True  # Only detect changes within ROI
             self.in_cooldown = False  # Whether in cooldown phase before stopping
             self.last_background_reset = 0  # Time when background model was last reset
+            
+            # FPS calculation
+            self.fps = 0
+            self.prev_frame_time = 0
+            self.curr_frame_time = 0
             
             # State for UI
             if not hasattr(self, 'last_recognized_plate'):
@@ -423,28 +428,8 @@ class VehicleTracker:
             self.processing_active = True
             return True, False
         
-        # If we're in active processing mode
-        if self.processing_active:
-            # Check if we've timed out with no activity
-            if current_time - self.last_activity_time > self.cooldown_period:
-                if not self.in_cooldown:
-                    logger.info("[TRACKER] No activity detected for cooldown period, entering cooldown")
-                    self.in_cooldown = True
-                
-                # If cooldown is exceeded, stop active processing
-                if current_time - self.last_activity_time > self.cooldown_period * 2:
-                    logger.info("[TRACKER] Exiting active processing mode after cooldown")
-                    self.processing_active = False
-                    self.in_cooldown = False
-            
-            # In active mode, process frame (possible cooldown)
-            return True, False
-        
-        # In idle mode, only process every Nth frame for motion detection
-        if self.frame_counter % self.frame_skip != 0:
-            return False, False
-        
-        # Apply foreground mask
+        # Always process every frame (modified to always return True for processing)
+        # Apply foreground mask for activity detection, but always process the frame
         fgmask = self.background_model.apply(frame)
         
         # Apply morphological operations to remove noise
@@ -475,15 +460,13 @@ class VehicleTracker:
             self.background_model = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=False)
             self.last_background_reset = current_time
         
-        # If activity is detected, switch to active processing
+        # If activity is detected, update the timestamp
         if activity_detected:
-            logger.info(f"[TRACKER] Activity detected ({percent_changed:.1%} of frame), activating processing")
-            self.processing_active = True
+            logger.debug(f"[TRACKER] Activity detected ({percent_changed:.1%} of frame)")
             self.last_activity_time = current_time
-            return True, True
         
-        # No activity, stay in idle mode
-        return False, False
+        # Always return True to process every frame, but also indicate if activity was detected
+        return True, activity_detected
 
     def detect_vehicles(self, frame):
         """Detect and track vehicles in frame, with CPU optimization using trigger system."""
@@ -492,6 +475,12 @@ class VehicleTracker:
             return False, None
             
         try:
+            # Calculate FPS
+            self.curr_frame_time = time.time()
+            if self.prev_frame_time != 0:
+                self.fps = 1 / (self.curr_frame_time - self.prev_frame_time)
+            self.prev_frame_time = self.curr_frame_time
+            
             # Create visualization frame
             vis_frame = frame.copy()
             
@@ -525,6 +514,13 @@ class VehicleTracker:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
             cv2.putText(vis_frame, f"Processing: {status_text}", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 1)  # Colored text
+            
+            # Display FPS
+            fps_text = f"FPS: {self.fps:.1f}"
+            cv2.putText(vis_frame, fps_text, (10, 60),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
+            cv2.putText(vis_frame, fps_text, (10, 60),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)  # White text
             
             # Only run detection if we should process this frame
             if should_process:
