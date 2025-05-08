@@ -1,5 +1,4 @@
-from app import SpherexAgent
+from spherex_agent import main
 
 if __name__ == "__main__":
-    agent = SpherexAgent()
-    agent.start()
+    main()

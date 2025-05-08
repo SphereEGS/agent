@@ -1,0 +1,45 @@
+description: Ultralytics lpr_nano model trained on coco.yaml
+author: Ultralytics
+date: '2025-05-08T10:44:36.953234'
+version: 8.3.55
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+batch: 1
+imgsz:
+- 640
+- 640
+names:
+  0: '1'
+  1: '2'
+  2: '3'
+  3: '4'
+  4: '5'
+  5: '6'
+  6: '7'
+  7: 7aah
+  8: '8'
+  9: '9'
+  10: Daad
+  11: Een
+  12: F
+  13: Heeh
+  14: Kaaf
+  15: Laam
+  16: License Plate
+  17: Meem
+  18: Noon
+  19: Q
+  20: R
+  21: Saad
+  22: Seen
+  23: Taa
+  24: Wow
+  25: Yeeh
+  26: Zeen
+  27: alef
+  28: baa
+  29: car
+  30: daal
+  31: geem
