@@ -73,20 +73,11 @@ class VehicleTracker:
             self.tracked_vehicles = {}
             self.plate_attempts = defaultdict(int)
             self.detected_plates = {}
-            self.max_attempts = 3
+            self.max_attempts = 6
             self.vehicle_tracking_timeout = 10
             self.last_vehicle_tracking_time = {}
             self.frame_buffer = {}
-            self.max_buffer_size = 5
-            
-            # Add recapturing mechanism
-            self.roi_entry_times = {}  # Tracks when vehicles entered ROI
-            self.recapture_cooldown = {}  # Cooldown timer for recaptures
-            self.recapture_interval = 5  # Time in seconds to wait before recapture
-            self.is_recapturing = {}  # Flag to track recapture state
-            self.recapture_display_time = {}  # For tracking how long to display recapture message
-            self.unauthorized_detection_times = {}  # When unauthorized plates were first detected
-            self.unauthorized_recapture_interval = 8  # Time to wait before recapturing unauthorized plates
+            self.max_buffer_size = 15
             
             # Add CPU optimization attributes
             self.processing_active = False  # Whether active detection is running
@@ -348,25 +339,9 @@ class VehicleTracker:
                 del self.detected_plates[track_id]
             # Reset plate attempts counter
             self.plate_attempts[track_id] = 0
-            # Clear recapture tracking data
-            if track_id in self.roi_entry_times:
-                del self.roi_entry_times[track_id]
-            if track_id in self.recapture_cooldown:
-                del self.recapture_cooldown[track_id]
-            if track_id in self.is_recapturing:
-                del self.is_recapturing[track_id]
-            if track_id in self.recapture_display_time:
-                del self.recapture_display_time[track_id]
-            if track_id in self.unauthorized_detection_times:
-                del self.unauthorized_detection_times[track_id]
             # Keep last recognized plate for display but mark vehicle as exited
             # Could optionally add: self.frame_buffer[track_id] = []
         
-        # If vehicle just entered ROI, record entry time
-        if is_in_roi and (track_id not in self.vehicle_roi_state or not self.vehicle_roi_state[track_id]):
-            self.roi_entry_times[track_id] = current_time
-            logger.info(f"[TRACKER] Vehicle {track_id} entered ROI at {current_time}")
-            
         # Update vehicle's current ROI state
         self.vehicle_roi_state[track_id] = is_in_roi
         
@@ -588,78 +563,20 @@ class VehicleTracker:
                                 vehicles_in_roi += 1
                                 # Keep processing active when vehicles are in ROI
                                 self.last_activity_time = time.time()
-                                current_time = time.time()
                                 
-                                # Check if we need to recapture for this vehicle
-                                should_recapture = False
-                                recapture_reason = ""
-                                
-                                # Case 1: No plate detected yet
-                                if track_id not in self.detected_plates:
-                                    # If vehicle has been in ROI for more than recapture_interval seconds without detecting a plate
-                                    if track_id in self.roi_entry_times:
-                                        time_in_roi = current_time - self.roi_entry_times[track_id]
-                                        
-                                        # Check if cooldown period has passed since last recapture
-                                        cooldown_passed = True
-                                        if track_id in self.recapture_cooldown:
-                                            cooldown_passed = (current_time - self.recapture_cooldown[track_id]) > self.recapture_interval
-                                            
-                                        if time_in_roi > self.recapture_interval and cooldown_passed:
-                                            should_recapture = True
-                                            recapture_reason = "NO_PLATE_DETECTED"
-                                            logger.info(f"[TRACKER] Recapturing for vehicle {track_id} after {time_in_roi:.1f}s in ROI - No plate detected")
-                                # Case 2: Plate detected but unauthorized
-                                elif track_id in self.detected_plates:
-                                    plate_text = self.detected_plates[track_id]
-                                    # Check if this plate is authorized
-                                    # Assume that we're tracking authorization in last_plate_authorized
-                                    # when displaying plates (self.last_recognized_plate == plate_text)
-                                    is_authorized = False
-                                    if hasattr(self, 'last_recognized_plate') and self.last_recognized_plate == plate_text:
-                                        is_authorized = self.last_plate_authorized
-                                    
-                                    # If unauthorized, track when we first detected it as unauthorized
-                                    if not is_authorized:
-                                        if track_id not in self.unauthorized_detection_times:
-                                            self.unauthorized_detection_times[track_id] = current_time
-                                            logger.info(f"[TRACKER] Detected unauthorized plate for vehicle {track_id}")
-                                        
-                                        # Check if we've waited long enough to recapture
-                                        time_since_detection = current_time - self.unauthorized_detection_times[track_id]
-                                        
-                                        # Check cooldown for unauthorized recaptures too
-                                        cooldown_passed = True
-                                        if track_id in self.recapture_cooldown:
-                                            cooldown_passed = (current_time - self.recapture_cooldown[track_id]) > self.recapture_interval
-                                        
-                                        if time_since_detection > self.unauthorized_recapture_interval and cooldown_passed:
-                                            should_recapture = True
-                                            recapture_reason = "UNAUTHORIZED_PLATE"
-                                            logger.info(f"[TRACKER] Recapturing for vehicle {track_id} after {time_since_detection:.1f}s - Unauthorized plate")
-                                    else:
-                                        # If plate is authorized, clean up any unauthorized tracking data
-                                        if track_id in self.unauthorized_detection_times:
-                                            del self.unauthorized_detection_times[track_id]
-                                
-                                # Set recapture state if needed
-                                if should_recapture:
-                                    self.recapture_cooldown[track_id] = current_time
-                                    self.is_recapturing[track_id] = True
-                                    self.recapture_display_time[track_id] = current_time + 2.0  # Display for 2 seconds
-                                
-                                # Process license plate normally or during recapture
-                                if track_id not in self.detected_plates and (
-                                    track_id in self.frame_buffer and len(self.frame_buffer[track_id]) >= 3 or should_recapture):
-                                    vehicles_processed_for_plates += 1
-                                    # Get best frame from buffer
-                                    best_frame = self._select_best_frame(self.frame_buffer[track_id])
-                                    if best_frame is not None:
-                                        # Process the plate on the best quality frame
-                                        logger.info(f"[TRACKER] Processing license plate for vehicle {track_id} using best quality frame")
-                                        self._process_plate(best_frame, track_id)
-                                    else:
-                                        logger.warning(f"[TRACKER] Could not select best frame for vehicle {track_id}")
+                                # Only try to detect license plate if not already detected for this vehicle
+                                if track_id not in self.detected_plates and track_id in self.frame_buffer:
+                                    # Process license plate if we have enough frames buffered
+                                    if len(self.frame_buffer[track_id]) >= 3:
+                                        vehicles_processed_for_plates += 1
+                                        # Get best frame from buffer
+                                        best_frame = self._select_best_frame(self.frame_buffer[track_id])
+                                        if best_frame is not None:
+                                            # Process the plate on the best quality frame
+                                            logger.info(f"[TRACKER] Processing license plate for vehicle {track_id} using best quality frame")
+                                            self._process_plate(best_frame, track_id)
+                                        else:
+                                            logger.warning(f"[TRACKER] Could not select best frame for vehicle {track_id}")
                         
                         if vehicles_in_roi > 0:
                             logger.debug(f"[TRACKER] {vehicles_in_roi} vehicles in ROI, {vehicles_processed_for_plates} processed for plates")
@@ -705,48 +622,6 @@ class VehicleTracker:
                 cv2.putText(vis_frame, "ACTIVITY DETECTED", (w//2-150, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
             
-            # Display recapture notification for vehicles
-            current_time = time.time()
-            for track_id, display_until in list(self.recapture_display_time.items()):
-                if current_time < display_until:
-                    # Find the position of the vehicle if it's still being tracked
-                    vehicle_pos = None
-                    for box, tid, cls_id in zip(boxes, track_ids, class_ids):
-                        if tid == track_id:
-                            x1, y1, x2, y2 = map(int, box)
-                            vehicle_pos = (x1, y1)
-                            break
-                    
-                    # Display recapture notification
-                    if vehicle_pos:
-                        # Add background for better visibility
-                        text = "RECAPTURING PLATE..."
-                        # Add reason if we know it (unauthorized vs not detected)
-                        if track_id in self.is_recapturing and track_id in self.detected_plates:
-                            text = "RECHECKING AUTHORIZATION..."
-                        
-                        font = cv2.FONT_HERSHEY_SIMPLEX
-                        text_size = cv2.getTextSize(text, font, 0.7, 2)[0]
-                        text_x, text_y = vehicle_pos[0], vehicle_pos[1] - 40
-                        
-                        # Draw box behind text
-                        cv2.rectangle(vis_frame, 
-                                     (text_x - 5, text_y - text_size[1] - 5),
-                                     (text_x + text_size[0] + 5, text_y + 5),
-                                     (0, 0, 0), -1)
-                        
-                        # Draw text with outline for visibility
-                        cv2.putText(vis_frame, text, (text_x, text_y),
-                                   font, 0.7, (0, 0, 0), 2)  # Black outline
-                        cv2.putText(vis_frame, text, (text_x, text_y),
-                                   font, 0.7, (0, 255, 255), 1)  # Yellow text
-                    else:
-                        # Vehicle is no longer visible, remove from display time tracking
-                        del self.recapture_display_time[track_id]
-                else:
-                    # Display time expired, remove from tracking
-                    del self.recapture_display_time[track_id]
-            
             # Display the visualization frame in a camera-specific window
             window_name = f'Detections - {self.camera_id}'
             cv2.imshow(window_name, vis_frame)
@@ -782,24 +657,31 @@ class VehicleTracker:
         """Process vehicle image to detect and recognize license plate"""
         try:
             if self.plate_attempts[track_id] >= self.max_attempts:
+                logger.info(f"[TRACKER:{self.camera_id}] Max attempts ({self.max_attempts}) reached for vehicle {track_id}")
                 return
                 
             # Step 1: Find the best license plate in the vehicle image
+            logger.info(f"[TRACKER:{self.camera_id}] Attempting to find license plate for vehicle {track_id} (attempt {self.plate_attempts[track_id]+1}/{self.max_attempts})")
             plate_img = self.plate_processor.find_best_plate_in_image(vehicle_img)
             if plate_img is None:
                 self.plate_attempts[track_id] += 1
+                logger.info(f"[TRACKER:{self.camera_id}] No license plate found for vehicle {track_id}")
                 return
+            
+            logger.info(f"[TRACKER:{self.camera_id}] License plate found for vehicle {track_id}, attempting recognition")
                 
             # Step 2: Recognize characters on the license plate
             plate_text = self.plate_processor.recognize_plate(plate_img)
             if plate_text and len(plate_text) >= 3:
-                logger.info(f"[TRACKER] License plate recognized for vehicle {track_id}: {plate_text}")
+                logger.info(f"[TRACKER:{self.camera_id}] License plate recognized for vehicle {track_id}: {plate_text}")
                 self.detected_plates[track_id] = plate_text
                 return
+            else:
+                logger.info(f"[TRACKER:{self.camera_id}] Failed to recognize characters on plate for vehicle {track_id}")
                 
             self.plate_attempts[track_id] += 1
         except Exception as e:
-            logger.error(f"[TRACKER] Error in license plate processing: {str(e)}")
+            logger.error(f"[TRACKER:{self.camera_id}] Error in license plate processing: {str(e)}")
             self.plate_attempts[track_id] += 1
 
     def _select_best_frame(self, frames_with_scores):
