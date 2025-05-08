@@ -84,7 +84,7 @@ class VehicleTracker:
             self.last_activity_time = 0  # Last time activity was detected
             self.cooldown_period = 5  # Seconds to wait after no activity before stopping processing
             self.idle_timeout = 30  # Seconds without activity before resetting background model
-            self.frame_skip = 10  # Process only every Nth frame when in idle mode
+            self.frame_skip = 3  # Process only every Nth frame when in idle mode
             self.frame_counter = 0  # Counter for frame skipping
             self.pixel_diff_threshold = 15  # Minimum threshold for pixel-based changes
             self.area_diff_threshold = 0.03  # Percentage of frame that needs to change
@@ -93,6 +93,11 @@ class VehicleTracker:
             self.roi_activity_only = True  # Only detect changes within ROI
             self.in_cooldown = False  # Whether in cooldown phase before stopping
             self.last_background_reset = 0  # Time when background model was last reset
+            
+            # FPS calculation
+            self.fps = 0
+            self.prev_frame_time = 0
+            self.curr_frame_time = 0
             
             # State for UI
             if not hasattr(self, 'last_recognized_plate'):
@@ -492,6 +497,12 @@ class VehicleTracker:
             return False, None
             
         try:
+            # Calculate FPS
+            self.curr_frame_time = time.time()
+            if self.prev_frame_time != 0:
+                self.fps = 1 / (self.curr_frame_time - self.prev_frame_time)
+            self.prev_frame_time = self.curr_frame_time
+            
             # Create visualization frame
             vis_frame = frame.copy()
             
@@ -525,6 +536,13 @@ class VehicleTracker:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
             cv2.putText(vis_frame, f"Processing: {status_text}", (10, 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 1)  # Colored text
+            
+            # Display FPS
+            fps_text = f"FPS: {self.fps:.1f}"
+            cv2.putText(vis_frame, fps_text, (10, 60),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
+            cv2.putText(vis_frame, fps_text, (10, 60),
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)  # White text
             
             # Only run detection if we should process this frame
             if should_process:
