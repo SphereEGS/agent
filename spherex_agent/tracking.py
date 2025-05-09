@@ -98,8 +98,8 @@ class Tracker:
                 elif event == cv2.EVENT_RBUTTONDOWN and len(self.points) > 2:
                     self.drawing = False
                     cv2.setMouseCallback(
-                        f"Draw ROI {config.gate} ({self.gate_type})",
-                        lambda event, x, y, flags, param: None,
+                        f"Draw ROI ({self.gate_type})",
+                        lambda *args: None,
                     )
 
         roi_state = RoiState(self.gate_type)
