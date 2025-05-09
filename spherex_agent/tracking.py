@@ -4,7 +4,7 @@ from typing import Any, Dict, Generator, List
 import cv2
 from cv2.typing import MatLike
 import numpy as np
-from ultralytics import YOLO  # type: ignore
+from ultralytics import YOLO
 from .backend_sync import BackendSync
 from .config import config
 from .gate_control import GateControl
@@ -13,10 +13,11 @@ from .lpr import LPR
 from numpy.typing import NDArray
 from PIL import Image, ImageDraw, ImageFont
 import os
+import arabic_reshaper
+from bidi.algorithm import get_display
 
 MAX_DISPLAY_HEIGHT = 720
 FONT_PATH = "resources/NotoSansArabic-Regular.ttf"
-
 
 class Tracker:
     def __init__(
@@ -165,6 +166,12 @@ class Tracker:
     def _render_arabic_text(
         self, text: str, font_size: int, img_shape: tuple[int, int, int]
     ) -> tuple[MatLike, Any]:
+        # Reshape and reorder Arabic text
+        reshaped_text = arabic_reshaper.reshape(text)
+        bidi_text = get_display(reshaped_text)
+        # Add spaces between characters for clarity
+        spaced_text = " ".join(bidi_text)
+
         # Create a blank PIL image for text rendering
         pil_img = Image.new(
             "RGB", (img_shape[1], img_shape[0]), color=(0, 0, 0)
@@ -181,7 +188,7 @@ class Tracker:
             raise ValueError(f"Font {FONT_PATH} not found or invalid")
 
         # Calculate text size and position
-        text_bbox = draw.textbbox((0, 0), text, font=font)
+        text_bbox = draw.textbbox((0, 0), spaced_text, font=font)
         _, text_height = (
             text_bbox[2] - text_bbox[0],
             text_bbox[3] - text_bbox[1],
@@ -192,7 +199,7 @@ class Tracker:
         text_position = (padding, img_shape[0] - text_height - padding)
 
         # Draw text (white color)
-        draw.text(text_position, text, font=font, fill=(255, 255, 255))
+        draw.text(text_position, spaced_text, font=font, fill=(255, 255, 255))
 
         # Convert PIL image to OpenCV format
         text_img = np.array(pil_img)
@@ -206,7 +213,7 @@ class Tracker:
     def track_and_capture(
         self,
     ) -> Generator[tuple[Any, List[tuple[int, NDArray[Any]]]], None, None]:
-        results = self.model.track(  # type: ignore
+        results = self.model.track(
             source=self.source,
             stream=True,
             persist=True,
@@ -311,6 +318,10 @@ class Tracker:
 
                     elif track_id in self.tracked_vehicles:
                         vehicle = self.tracked_vehicles[track_id]
+                        if vehicle["status"] == "pending" and vehicle["readings"]:
+                            # Vehicle left ROI early; decide based on readings
+                            self._handle_unauthorized(track_id, original_frame)
+                            vehicle = self.tracked_vehicles[track_id]  # Refresh vehicle data
                         if vehicle["authorized"]:
                             logger.info(
                                 f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} left ROI - Closing gate"
@@ -325,6 +336,10 @@ class Tracker:
             for track_id in list(self.tracked_vehicles.keys()):
                 if track_id not in current_track_ids:
                     vehicle = self.tracked_vehicles[track_id]
+                    if vehicle["status"] == "pending" and vehicle["readings"]:
+                        # Vehicle no longer detected; decide based on readings
+                        self._handle_unauthorized(track_id, original_frame)
+                        vehicle = self.tracked_vehicles[track_id]  # Refresh vehicle data
                     if vehicle["authorized"]:
                         logger.info(
                             f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} no longer detected - Closing gate"
@@ -360,7 +375,7 @@ class Tracker:
             total_valid_readings = len(readings)
             probability = count / total_valid_readings
             logger.info(
-                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} unauthorized after {self.max_attempts} attempts - Final plate: {plate} "
+                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} unauthorized after {vehicle['attempts']} attempts - Final plate: {plate} "
                 f"(Valid readings: {count}/{total_valid_readings}, Probability: {probability:.2f})"
             )
             vehicle["status"] = "unauthorized"
@@ -371,7 +386,7 @@ class Tracker:
             )
         else:
             logger.info(
-                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} unauthorized after {self.max_attempts} attempts - No valid plate readings detected"
+                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} unauthorized after {vehicle['attempts']} attempts - No valid plate readings detected"
             )
             vehicle["status"] = "no_plate"
             vehicle["plate"] = "No plate found"
