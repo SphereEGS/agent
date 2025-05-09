@@ -264,9 +264,6 @@ class Tracker:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     track_id = int(box.id) if box.id is not None else -1
                     if track_id == -1:
-                        logger.debug(
-                            f"Gate {config.gate} ({self.gate_type}): Skipping invalid track_id -1"
-                        )
                         continue
                     current_track_ids.add(track_id)
                     corners = [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]
