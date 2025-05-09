@@ -5,9 +5,9 @@ from typing import Any, Dict, List, Tuple
 from .config import config
 from .logging import logger
 from .tracking import Tracker, MAX_DISPLAY_HEIGHT
+from .lpr import LPR
 from .backend_sync import BackendSync
 from .gate_control import GateControl
-
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="SphereX Agent")
@@ -20,6 +20,7 @@ def main() -> None:
     args = parser.parse_args()
 
     # Initialize shared components once
+    lpr = LPR()
     backend_sync = BackendSync()
     gate_control = GateControl()
 
@@ -39,6 +40,7 @@ def main() -> None:
                 gate_type="Entry",
                 camera_url=config.entry["camera_url"],
                 roi_points=config.entry["roi"],
+                lpr=lpr,
                 backend_sync=backend_sync,
                 gate_control=gate_control,
             )
@@ -53,6 +55,7 @@ def main() -> None:
                 gate_type="Exit",
                 camera_url=config.exit["camera_url"],
                 roi_points=config.exit["roi"],
+                lpr=lpr,
                 backend_sync=backend_sync,
                 gate_control=gate_control,
             )
@@ -74,6 +77,7 @@ def main() -> None:
             gate_type="Entry",
             camera_url=config.entry["camera_url"],
             roi_points=config.entry["roi"],
+            lpr=lpr,
             backend_sync=backend_sync,
             gate_control=gate_control,
         )
@@ -84,6 +88,7 @@ def main() -> None:
             gate_type="Exit",
             camera_url=config.exit["camera_url"],
             roi_points=config.exit["roi"],
+            lpr=lpr,
             backend_sync=backend_sync,
             gate_control=gate_control,
         )
@@ -99,52 +104,50 @@ def main() -> None:
     ]
 
     while True:
-        pass
-    #     try:
-    #         for tracker, gate_type, generator in tracker_generators:
-    #             try:
-    #                 display_frame, _ = next(generator)
-    #                 if display_frame is None:
-    #                     logger.error(
-    #                         f"Gate {config.gate} ({gate_type}): Tracker stopped unexpectedly"
-    #                     )
-    #                     return
+        try:
+            for tracker, gate_type, generator in tracker_generators:
+                try:
+                    display_frame, _ = next(generator)
+                    if display_frame is None:
+                        logger.error(
+                            f"Gate {config.gate} ({gate_type}): Tracker stopped unexpectedly"
+                        )
+                        return
 
-    #                 # Resize frame to fit within MAX_DISPLAY_HEIGHT while preserving aspect ratio
-    #                 orig_height, orig_width = display_frame.shape[:2]
-    #                 scale_factor = min(MAX_DISPLAY_HEIGHT / orig_height, 1.0)
-    #                 display_height = int(orig_height * scale_factor)
-    #                 display_width = int(orig_width * scale_factor)
-    #                 resized_frame = cv2.resize(
-    #                     display_frame,
-    #                     (display_width, display_height),
-    #                     interpolation=cv2.INTER_AREA,
-    #                 )
+                    # # Resize frame to fit within MAX_DISPLAY_HEIGHT while preserving aspect ratio
+                    # orig_height, orig_width = display_frame.shape[:2]
+                    # scale_factor = min(MAX_DISPLAY_HEIGHT / orig_height, 1.0)
+                    # display_height = int(orig_height * scale_factor)
+                    # display_width = int(orig_width * scale_factor)
+                    # resized_frame = cv2.resize(
+                    #     display_frame,
+                    #     (display_width, display_height),
+                    #     interpolation=cv2.INTER_AREA,
+                    # )
+                    #
+                    # cv2.imshow(
+                    #     f"Vehicle Tracking ({gate_type})", resized_frame
+                    # )
+                except StopIteration:
+                    logger.error(
+                        f"Gate {config.gate} ({gate_type}): Tracker stream ended"
+                    )
+                    return
+                except Exception as e:
+                    logger.error(
+                        f"Gate {config.gate} ({gate_type}): Tracker error: {e}"
+                    )
+                    continue
 
-    #                 cv2.imshow(
-    #                     f"Vehicle Tracking ({gate_type})", resized_frame
-    #                 )
-    #             except StopIteration:
-    #                 logger.error(
-    #                     f"Gate {config.gate} ({gate_type}): Tracker stream ended"
-    #                 )
-    #                 return
-    #             except Exception as e:
-    #                 logger.error(
-    #                     f"Gate {config.gate} ({gate_type}): Tracker error: {e}"
-    #                 )
-    #                 continue
-
-    #         if cv2.waitKey(1) & 0xFF == ord("q"):
-    #             break
-    #     except Exception as e:
-    #         logger.error(f"Gate {config.gate}: Error processing frame: {e}")
-    #         break
+            # if cv2.waitKey(1) & 0xFF == ord("q"):
+            #     break
+        except Exception as e:
+            logger.error(f"Gate {config.gate}: Error processing frame: {e}")
+            break
 
     # for _, gate_type in trackers:
     #     cv2.destroyWindow(f"Vehicle Tracking ({gate_type})")
     # cv2.destroyAllWindows()
-
 
 if __name__ == "__main__":
     main()
