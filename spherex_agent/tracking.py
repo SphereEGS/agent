@@ -41,7 +41,7 @@ class Tracker:
         self.backend_sync = backend_sync
         self.gate_control = gate_control
         self.tracked_vehicles: Dict[int, Dict[str, Any]] = {}
-        self.max_attempts = 20
+        self.max_attempts = 50
 
         if config.gpu and os.path.exists(tensorrt_path):
             logger.info(
@@ -291,6 +291,13 @@ class Tracker:
 
                         vehicle = self.tracked_vehicles[track_id]
                         if vehicle["status"] == "pending":
+                            # Check attempts before incrementing
+                            if vehicle["attempts"] >= self.max_attempts:
+                                self._handle_unauthorized(
+                                    track_id, vehicle["first_frame"]
+                                )
+                                continue  # Skip further processing for this vehicle in this frame
+
                             car_crop = original_frame[y1:y2, x1:x2]
                             vehicle["attempts"] += 1
                             logger.info(
@@ -333,10 +340,6 @@ class Tracker:
                                         logger.warning(
                                             f"Gate {config.gate} ({self.gate_type}): No first frame available for authorized vehicle {track_id}"
                                         )
-                            elif vehicle["attempts"] >= self.max_attempts:
-                                self._handle_unauthorized(
-                                    track_id, vehicle["first_frame"]
-                                )
                             else:
                                 text_to_display.append(
                                     f"Vehicle {track_id}: Detecting..."
