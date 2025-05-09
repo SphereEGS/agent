@@ -80,15 +80,6 @@ class Tracker:
             )
             self.model = YOLO(model_path, task="detect")
 
-    def _get_gstreamer_pipeline(self, rtsp_url: str) -> str:
-        # GStreamer pipeline for RTSP stream with hardware decoding (nvdec)
-        pipeline = (
-            f"rtspsrc location={rtsp_url} latency=200 ! "
-            "rtph264depay ! h264parse ! nvdec ! "
-            "videoconvert ! appsink"
-        )
-        return pipeline
-
     def draw_roi(self) -> List[List[int]]:
         class RoiState:
             def __init__(self, gate_type: str) -> None:
@@ -113,9 +104,7 @@ class Tracker:
 
         max_retries = 5
         for attempt in range(max_retries):
-            # Use GStreamer pipeline for RTSP stream
-            pipeline = self._get_gstreamer_pipeline(self.source)
-            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+            cap = cv2.VideoCapture(self.source)
             if cap.isOpened():
                 break
             logger.warning(
@@ -123,17 +112,9 @@ class Tracker:
             )
             time.sleep(1)
         else:
-            # Fallback to software decoding if nvdec fails
-            pipeline = (
-                f"rtspsrc location={self.source} latency=200 ! "
-                "rtph264depay ! h264parse ! avdec_h264 ! "
-                "videoconvert ! appsink"
+            raise ValueError(
+                f"Gate {config.gate} ({self.gate_type}): Could not open video stream after {max_retries} attempts"
             )
-            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-            if not cap.isOpened():
-                raise ValueError(
-                    f"Gate {config.gate} ({self.gate_type}): Could not open video stream after {max_retries} attempts"
-                )
 
         ret, frame = cap.read()
         if not ret:
@@ -244,49 +225,32 @@ class Tracker:
     def track_and_capture(
         self,
     ) -> Generator[tuple[Any, List[tuple[int, NDArray[Any]]]], None, None]:
-        max_retries = 5
+        max_retries = 10  # Increased retries for robustness
         for attempt in range(max_retries):
             try:
-                # Use GStreamer pipeline for RTSP stream
-                pipeline = self._get_gstreamer_pipeline(self.source)
-                cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+                # Use GStreamer pipeline with software decoding
+                gst_pipeline = (
+                    f"rtspsrc location={self.source} latency=200 ! "
+                    f"rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! "
+                    f"appsink"
+                )
+                cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
                 if cap.isOpened():
-                    results = self.model.track(
-                        source=cap,
-                        stream=True,
-                        persist=True,
-                        classes=[2, 3, 5, 7],
-                        verbose=False,
-                    )
                     break
-                else:
-                    raise Exception("Failed to open GStreamer pipeline")
+                logger.warning(
+                    f"Gate {config.gate} ({self.gate_type}): Failed to open video stream (attempt {attempt + 1}/{max_retries})"
+                )
+                time.sleep(2)  # Increased delay for network stability
             except Exception as e:
                 logger.warning(
                     f"Gate {config.gate} ({self.gate_type}): Failed to start tracking (attempt {attempt + 1}/{max_retries}): {e}"
                 )
-                time.sleep(1)
+                time.sleep(2)
         else:
-            # Fallback to software decoding if nvdec fails
-            pipeline = (
-                f"rtspsrc location={self.source} latency=200 ! "
-                "rtph264depay ! h264parse ! avdec_h264 ! "
-                "videoconvert ! appsink"
+            logger.error(
+                f"Gate {config.gate} ({self.gate_type}): Failed to start tracking after {max_retries} attempts"
             )
-            cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
-            if cap.isOpened():
-                results = self.model.track(
-                    source=cap,
-                    stream=True,
-                    persist=True,
-                    classes=[2, 3, 5, 7],
-                    verbose=False,
-                )
-            else:
-                logger.error(
-                    f"Gate {config.gate} ({self.gate_type}): Failed to start tracking after {max_retries} attempts"
-                )
-                return
+            return
 
         roi_poly = (
             np.array(self.roi_points, np.int32)
@@ -294,160 +258,164 @@ class Tracker:
             else None
         )
 
-        try:
-            for result in results:
-                original_frame = result.orig_img
-                display_frame = result.plot()
-                if roi_poly is not None:
-                    cv2.polylines(display_frame, [roi_poly], True, (0, 255, 0), 2)
+        for result in self.model.track(
+            source=cap,
+            stream=True,
+            persist=True,
+            classes=[2, 3, 5, 7],
+            verbose=False,
+        ):
+            original_frame = result.orig_img
+            # Comment out display-related code as per previous request
+            # display_frame = result.plot()
+            # if roi_poly is not None:
+            #     cv2.polylines(display_frame, [roi_poly], True, (0, 255, 0), 2)
 
-                current_track_ids = set()
-                text_to_display = []
-                if result.boxes and roi_poly is not None:
-                    for box in result.boxes:
-                        x1, y1, x2, y2 = map(int, box.xyxy[0])
-                        track_id = int(box.id) if box.id is not None else -1
-                        if track_id == -1:
-                            logger.debug(
-                                f"Gate {config.gate} ({self.gate_type}): Skipping invalid track_id -1"
-                            )
-                            continue
-                        current_track_ids.add(track_id)
-                        corners = [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]
-                        in_roi = any(
-                            cv2.pointPolygonTest(roi_poly, corner, False) >= 0
-                            for corner in corners
+            current_track_ids = set()
+            text_to_display = []
+            if result.boxes and roi_poly is not None:
+                for box in result.boxes:
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    track_id = int(box.id) if box.id is not None else -1
+                    if track_id == -1:
+                        logger.debug(
+                            f"Gate {config.gate} ({self.gate_type}): Skipping invalid track_id -1"
                         )
+                        continue
+                    current_track_ids.add(track_id)
+                    corners = [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]
+                    in_roi = any(
+                        cv2.pointPolygonTest(roi_poly, corner, False) >= 0
+                        for corner in corners
+                    )
 
-                        if in_roi:
-                            if track_id not in self.tracked_vehicles:
-                                self.tracked_vehicles[track_id] = {
-                                    "status": "pending",
-                                    "readings": [],
-                                    "attempts": 0,
-                                    "plate": None,
-                                    "authorized": None,
-                                    "first_frame": original_frame.copy(),
-                                }
+                    if in_roi:
+                        if track_id not in self.tracked_vehicles:
+                            self.tracked_vehicles[track_id] = {
+                                "status": "pending",
+                                "readings": [],
+                                "attempts": 0,
+                                "plate": None,
+                                "authorized": None,
+                                "first_frame": original_frame.copy(),
+                            }
+                            logger.info(
+                                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} entered ROI - Starting recognition"
+                            )
+
+                        vehicle = self.tracked_vehicles[track_id]
+                        if vehicle["status"] == "pending":
+                            car_crop = original_frame[y1:y2, x1:x2]
+                            vehicle["attempts"] += 1
+                            logger.info(
+                                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} - Recognition attempt {vehicle['attempts']}/{self.max_attempts}"
+                            )
+                            license_text = (
+                                self.lpr.recognize_plate(car_crop)
+                                if car_crop.size > 0
+                                else None
+                            )
+
+                            if license_text:
+                                vehicle["readings"].append(license_text)
                                 logger.info(
-                                    f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} entered ROI - Starting recognition"
-                                )
-
-                            vehicle = self.tracked_vehicles[track_id]
-                            if vehicle["status"] == "pending":
-                                car_crop = original_frame[y1:y2, x1:x2]
-                                vehicle["attempts"] += 1
-                                logger.info(
-                                    f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} - Recognition attempt {vehicle['attempts']}/{self.max_attempts}"
-                                )
-                                license_text = (
-                                    self.lpr.recognize_plate(car_crop)
-                                    if car_crop.size > 0
-                                    else None
-                                )
-
-                                if license_text:
-                                    vehicle["readings"].append(license_text)
-                                    logger.info(
-                                        f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} - Plate reading: {license_text}"
-                                    )
-                                    text_to_display.append(
-                                        f"Vehicle {track_id}: {license_text}"
-                                    )
-
-                                    if self.backend_sync.is_authorized(
-                                        license_text
-                                    ):
-                                        vehicle["status"] = "authorized"
-                                        vehicle["authorized"] = True
-                                        vehicle["plate"] = license_text
-                                        logger.info(
-                                            f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} authorized with plate {license_text} - Opening gate"
-                                        )
-                                        self.gate_control.open(self.gate_type)
-                                        if vehicle["first_frame"] is not None:
-                                            self.backend_sync.log_to_backend(
-                                                self.gate_type,
-                                                license_text,
-                                                True,
-                                                vehicle["first_frame"],
-                                                track_id,
-                                            )
-                                        else:
-                                            logger.warning(
-                                                f"Gate {config.gate} ({self.gate_type}): No first frame available for authorized vehicle {track_id}"
-                                            )
-                                elif vehicle["attempts"] >= self.max_attempts:
-                                    self._handle_unauthorized(
-                                        track_id, vehicle["first_frame"]
-                                    )
-                                else:
-                                    text_to_display.append(
-                                        f"Vehicle {track_id}: Detecting..."
-                                    )
-
-                            if vehicle["status"] in ["authorized", "unauthorized"]:
-                                status = (
-                                    "Authorized"
-                                    if vehicle["authorized"]
-                                    else "Unauthorized"
+                                    f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} - Plate reading: {license_text}"
                                 )
                                 text_to_display.append(
-                                    f"Vehicle {track_id}: {vehicle['plate']} - {status}"
+                                    f"Vehicle {track_id}: {license_text}"
                                 )
 
-                        elif track_id in self.tracked_vehicles:
-                            vehicle = self.tracked_vehicles[track_id]
-                            if vehicle["status"] == "pending" and vehicle["readings"]:
-                                # Vehicle left ROI early; decide based on readings
-                                self._handle_unauthorized(track_id, vehicle["first_frame"])
-                                vehicle = self.tracked_vehicles[track_id]  # Refresh vehicle data
-                            if vehicle["authorized"]:
-                                logger.info(
-                                    f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} left ROI - Closing gate"
+                                if self.backend_sync.is_authorized(
+                                    license_text
+                                ):
+                                    vehicle["status"] = "authorized"
+                                    vehicle["authorized"] = True
+                                    vehicle["plate"] = license_text
+                                    logger.info(
+                                        f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} authorized with plate {license_text} - Opening gate"
+                                    )
+                                    self.gate_control.open(self.gate_type)
+                                    if vehicle["first_frame"] is not None:
+                                        self.backend_sync.log_to_backend(
+                                            self.gate_type,
+                                            license_text,
+                                            True,
+                                            vehicle["first_frame"],
+                                            track_id,
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"Gate {config.gate} ({self.gate_type}): No first frame available for authorized vehicle {track_id}"
+                                        )
+                            elif vehicle["attempts"] >= self.max_attempts:
+                                self._handle_unauthorized(
+                                    track_id, vehicle["first_frame"]
                                 )
-                                self.gate_control.close(self.gate_type)
                             else:
-                                logger.info(
-                                    f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} left ROI - No action taken"
+                                text_to_display.append(
+                                    f"Vehicle {track_id}: Detecting..."
                                 )
-                            del self.tracked_vehicles[track_id]
 
-                for track_id in list(self.tracked_vehicles.keys()):
-                    if track_id not in current_track_ids:
+                        if vehicle["status"] in ["authorized", "unauthorized"]:
+                            status = (
+                                "Authorized"
+                                if vehicle["authorized"]
+                                else "Unauthorized"
+                            )
+                            text_to_display.append(
+                                f"Vehicle {track_id}: {vehicle['plate']} - {status}"
+                            )
+
+                    elif track_id in self.tracked_vehicles:
                         vehicle = self.tracked_vehicles[track_id]
                         if vehicle["status"] == "pending" and vehicle["readings"]:
-                            # Vehicle no longer detected; decide based on readings
+                            # Vehicle left ROI early; decide based on readings
                             self._handle_unauthorized(track_id, vehicle["first_frame"])
                             vehicle = self.tracked_vehicles[track_id]  # Refresh vehicle data
                         if vehicle["authorized"]:
                             logger.info(
-                                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} no longer detected - Closing gate"
+                                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} left ROI - Closing gate"
                             )
                             self.gate_control.close(self.gate_type)
                         else:
                             logger.info(
-                                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} no longer detected - No action taken"
+                                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} left ROI - No action taken"
                             )
                         del self.tracked_vehicles[track_id]
 
-                # Render text on the frame
-                if text_to_display:
-                    font_size = 24  # Suitable for resized frame
-                    text_y_offset = display_frame.shape[0] - 10  # Bottom padding
-                    for text in reversed(text_to_display):  # Bottom to top
-                        text_img, mask = self._render_arabic_text(
-                            text, font_size, display_frame.shape
+            for track_id in list(self.tracked_vehicles.keys()):
+                if track_id not in current_track_ids:
+                    vehicle = self.tracked_vehicles[track_id]
+                    if vehicle["status"] == "pending" and vehicle["readings"]:
+                        # Vehicle no longer detected; decide based on readings
+                        self._handle_unauthorized(track_id, vehicle["first_frame"])
+                        vehicle = self.tracked_vehicles[track_id]  # Refresh vehicle data
+                    if vehicle["authorized"]:
+                        logger.info(
+                            f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} no longer detected - Closing gate"
                         )
-                        text_y_offset -= (
-                            text_img.shape[0] // len(text_to_display)
-                        ) + 5  # Space between lines
-                        display_frame[mask] = text_img[mask]
+                        self.gate_control.close(self.gate_type)
+                    else:
+                        logger.info(
+                            f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} no longer detected - No action taken"
+                        )
+                    del self.tracked_vehicles[track_id]
 
-                yield display_frame, []
-        finally:
-            if 'cap' in locals():
-                cap.release()
+            # Comment out display-related code
+            # if text_to_display:
+            #     font_size = 24  # Suitable for resized frame
+            #     text_y_offset = display_frame.shape[0] - 10  # Bottom padding
+            #     for text in reversed(text_to_display):  # Bottom to top
+            #         text_img, mask = self._render_arabic_text(
+            #             text, font_size, display_frame.shape
+            #         )
+            #         text_y_offset -= (
+            #             text_img.shape[0] // len(text_to_display)
+            #         ) + 5  # Space between lines
+            #         display_frame[mask] = text_img[mask]
+
+            # yield display_frame, []
+            yield original_frame, []  # Use original_frame since display is disabled
 
     def _handle_unauthorized(self, track_id: int, frame: NDArray[Any] | None) -> None:
         vehicle = self.tracked_vehicles[track_id]
