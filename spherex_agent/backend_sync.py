@@ -29,7 +29,6 @@ class BackendSync:
                 response = requests.get(
                     f"{config.backend_url}/api/method/spherex.api.license_plate.get_authorized_plates",
                     params={"gate": config.gate},
-                    verify=False,
                 )
                 if response.status_code == 200:
                     with self.lock:
