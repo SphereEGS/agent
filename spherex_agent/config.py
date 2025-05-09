@@ -15,6 +15,7 @@ class Config:
         self.lpr_model: str = config.get("lpr_model", "lpr_nano.pt")
         self.backend_url: str = config.get("backend_url", "")
         self.gate: str = config.get("gate", "")
+        self.gpu: Optional[str | int] = config.get("gpu", None)
 
         # Initialize entry and exit configurations
         self.entry: Optional[Dict[str, Any]] = config.get("entry")

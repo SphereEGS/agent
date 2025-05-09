@@ -5,7 +5,7 @@ from typing import Any, List, Optional
 
 import cv2
 from numpy.typing import NDArray
-from ultralytics import YOLO
+from ultralytics import YOLO  # type: ignore[import]
 
 from .config import config
 from .logging import logger
@@ -61,28 +61,58 @@ TENSORRT_PATH = "resources/lpr_nano.engine"
 class LPR:
     def __init__(self) -> None:
         model_path = "resources/" + config.lpr_model
-        if os.path.exists(TENSORRT_PATH):
+
+        if config.gpu and os.path.exists(TENSORRT_PATH):
             logger.info("Loading TensorRT LPR model for GPU acceleration...")
-            self.model = YOLO(TENSORRT_PATH, task="detect")
-        else:
-            logger.info("Exporting LPR model to TensorRT for Jetson Nano GPU...")
             try:
-                self.model = YOLO(model_path, task="detect")
-                self.model.export(format="engine", device="cuda", half=True)
                 self.model = YOLO(TENSORRT_PATH, task="detect")
-                logger.info("TensorRT LPR model exported and loaded successfully")
+                logger.info("TensorRT LPR model loaded successfully")
             except Exception as e:
                 logger.warning(
-                    f"Failed to export to TensorRT: {e}. Falling back to PyTorch model."
+                    f"Failed to load TensorRT model: {e}. Falling back to CPU model."
+                )
+                self._load_cpu_model(model_path)
+        elif config.gpu:
+            logger.info(
+                "Exporting LPR model to TensorRT for GPU acceleration..."
+            )
+            try:
+                self.model = YOLO(model_path, task="detect")
+                self.model.export(
+                    format="engine", device=config.gpu, half=True
+                )
+                self.model = YOLO(TENSORRT_PATH, task="detect")
+                logger.info(
+                    "TensorRT LPR model exported and loaded successfully"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to export to TensorRT: {e}. Falling back to CPU model."
+                )
+                self._load_cpu_model(model_path)
+        else:
+            self._load_cpu_model(model_path)
+
+    def _load_cpu_model(self, model_path: str) -> None:
+        if os.path.exists(os.path.join(QUANTIZED_PATH, "lpr_nano.bin")):
+            logger.info("Loading OpenVINO LPR model for CPU...")
+            self.model = YOLO(QUANTIZED_PATH, task="detect")
+        else:
+            logger.info(
+                "Exporting LPR model to OpenVINO for CPU optimization..."
+            )
+            try:
+                self.model = YOLO(model_path, task="detect")
+                self.model.export(format="openvino", dynamic=True, half=True)
+                self.model = YOLO(QUANTIZED_PATH, task="detect")
+                logger.info(
+                    "OpenVINO LPR model exported and loaded successfully"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to export to OpenVINO: {e}. Using standard PyTorch model."
                 )
                 self.model = YOLO(model_path, task="detect")
-                if os.path.exists(os.path.join(QUANTIZED_PATH, "lpr_nano.bin")):
-                    logger.info("Loading OpenVINO LPR model as fallback...")
-                    self.model = YOLO(QUANTIZED_PATH, task="detect")
-                else:
-                    logger.info("Exporting LPR model to OpenVINO as fallback...")
-                    self.model.export(format="openvino", dynamic=True, half=True)
-                    self.model = YOLO(QUANTIZED_PATH, task="detect")
 
     def preprocess_image(self, image: NDArray[Any]) -> NDArray[Any]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -94,7 +124,7 @@ class LPR:
 
     def find_plate(self, image: NDArray[Any]) -> Optional[NDArray[Any]]:
         preprocessed = self.preprocess_image(image)
-        results: List[Any] = self.model.predict(
+        results: List[Any] = self.model.predict(  # type: ignore
             preprocessed,
             conf=0.25,
             iou=0.5,
@@ -133,7 +163,7 @@ class LPR:
         if plate_img is None:
             return None
 
-        results: List[Any] = self.model.predict(
+        results: List[Any] = self.model.predict(  # type: ignore
             plate_img,
             conf=0.25,
             iou=0.45,
@@ -148,10 +178,14 @@ class LPR:
         boxes_and_classes = sorted(
             [
                 (float(box[0]), lpr_class_names[int(cls)])
-                for box, cls in zip(results[0].boxes.xyxy, results[0].boxes.cls)
+                for box, cls in zip(
+                    results[0].boxes.xyxy, results[0].boxes.cls
+                )
             ],
             key=lambda x: x[0],
         )
-        unmapped_chars = [cls for _, cls in boxes_and_classes if cls in ARABIC_MAPPING]
+        unmapped_chars = [
+            cls for _, cls in boxes_and_classes if cls in ARABIC_MAPPING
+        ]
         mapped_chars = [ARABIC_MAPPING.get(c, c) for c in unmapped_chars]
         return "".join(mapped_chars)

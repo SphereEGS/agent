@@ -6,13 +6,14 @@ from typing import Any, Dict, Generator, List
 
 import cv2
 import numpy as np
-from ultralytics import YOLO
+from ultralytics import YOLO  # type: ignore[import]
 
 from .backend_sync import BackendSync
 from .config import config
 from .gate_control import GateControl
 from .logging import logger
 from .lpr import LPR
+from numpy.typing import NDArray
 
 MAX_DISPLAY_HEIGHT = 720
 
@@ -28,27 +29,7 @@ class Tracker:
         self.gate_type = gate_type
         model_path = "resources/" + model_path
         tensorrt_path = "resources/yolo11n.engine"
-        if os.path.exists(tensorrt_path):
-            logger.info(
-                f"Gate {config.gate} ({gate_type}): Loading TensorRT YOLO model for GPU acceleration..."
-            )
-            self.model = YOLO(tensorrt_path, task="detect")
-        else:
-            logger.info(
-                f"Gate {config.gate} ({gate_type}): Exporting YOLO model to TensorRT for Jetson Nano GPU..."
-            )
-            try:
-                self.model = YOLO(model_path, task="detect")
-                self.model.export(format="engine", device="cuda", half=True)
-                self.model = YOLO(tensorrt_path, task="detect")
-                logger.info(
-                    f"Gate {config.gate} ({gate_type}): TensorRT YOLO model exported and loaded successfully"
-                )
-            except Exception as e:
-                logger.warning(
-                    f"Gate {config.gate} ({gate_type}): Failed to export to TensorRT: {e}. Falling back to PyTorch model."
-                )
-                self.model = YOLO(model_path, task="detect")
+
         self.roi_points: List[List[int]] = roi_points
         self.source: str = camera_url
         self.lpr = LPR()
@@ -57,11 +38,50 @@ class Tracker:
         self.tracked_vehicles: Dict[int, Dict[str, Any]] = {}
         self.max_attempts = 20
 
+        if config.gpu and os.path.exists(tensorrt_path):
+            logger.info(
+                f"Gate {config.gate} ({gate_type}): Loading TensorRT YOLO model for GPU acceleration..."
+            )
+            try:
+                self.model = YOLO(tensorrt_path, task="detect")
+                logger.info(
+                    f"Gate {config.gate} ({gate_type}): TensorRT model loaded successfully"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Gate {config.gate} ({gate_type}): Failed to load TensorRT: {e}. Falling back to CPU model."
+                )
+                self.model = YOLO(model_path, task="detect")
+        elif config.gpu:
+            logger.info(
+                f"Gate {config.gate} ({gate_type}): Exporting YOLO model to TensorRT..."
+            )
+            try:
+                self.model = YOLO(model_path, task="detect")
+                self.model.export(
+                    format="engine", device=config.gpu, half=True
+                )
+                self.model = YOLO(tensorrt_path, task="detect")
+                logger.info(
+                    f"Gate {config.gate} ({gate_type}): TensorRT model exported and loaded successfully"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Gate {config.gate} ({gate_type}): Failed to export to TensorRT: {e}. Falling back to CPU model."
+                )
+                self.model = YOLO(model_path, task="detect")
+        else:
+            logger.info(
+                f"Gate {config.gate} ({gate_type}): Loading standard YOLO model for CPU..."
+            )
+            self.model = YOLO(model_path, task="detect")
+
     def draw_roi(self) -> List[List[int]]:
         class RoiState:
-            def __init__(self):
+            def __init__(self, gate_type: str) -> None:
                 self.points: List[List[int]] = []
                 self.drawing: bool = False
+                self.gate_type = gate_type
 
             def mouse_callback(
                 self, event: int, x: int, y: int, flags: int, param: Any
@@ -72,10 +92,11 @@ class Tracker:
                 elif event == cv2.EVENT_RBUTTONDOWN and len(self.points) > 2:
                     self.drawing = False
                     cv2.setMouseCallback(
-                        f"Draw ROI ({self.gate_type})", lambda *args: None
+                        f"Draw ROI {config.gate} ({self.gate_type})",
+                        lambda event, x, y, flags, param: None,
                     )
 
-        roi_state = RoiState()
+        roi_state = RoiState(self.gate_type)
 
         cap = cv2.VideoCapture(self.source)
         if not cap.isOpened():
@@ -143,12 +164,12 @@ class Tracker:
 
     def track_and_capture(
         self,
-    ) -> Generator[tuple[Any, List[tuple[int, np.ndarray]]], None, None]:
-        results = self.model.track(
+    ) -> Generator[tuple[Any, List[tuple[int, NDArray[Any]]]], None, None]:
+        results = self.model.track(  # type: ignore
             source=self.source,
             stream=True,
             persist=True,
-            classes=[2],  # Car class (COCO ID 2)
+            classes=[2],
             verbose=False,
         )
         roi_poly = (
@@ -289,7 +310,7 @@ class Tracker:
 
             yield display_frame, []
 
-    def _handle_unauthorized(self, track_id: int, frame: np.ndarray):
+    def _handle_unauthorized(self, track_id: int, frame: NDArray[Any]) -> None:
         vehicle = self.tracked_vehicles[track_id]
         readings = vehicle["readings"]
         if readings:
