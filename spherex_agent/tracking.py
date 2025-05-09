@@ -41,7 +41,7 @@ class Tracker:
         self.backend_sync = backend_sync
         self.gate_control = gate_control
         self.tracked_vehicles: Dict[int, Dict[str, Any]] = {}
-        self.max_attempts = 50
+        self.max_attempts = 30
 
         if config.gpu and os.path.exists(tensorrt_path):
             logger.info(
