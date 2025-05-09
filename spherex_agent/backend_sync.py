@@ -44,7 +44,7 @@ class BackendSync:
                 logger.error(
                     f"Gate {config.gate}: Error syncing authorized plates: {e}"
                 )
-            time.sleep(30)
+            time.sleep(60)
 
     def is_authorized(self, plate: str) -> bool:
         with self.lock:
