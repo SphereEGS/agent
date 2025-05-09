@@ -20,6 +20,7 @@ import time
 MAX_DISPLAY_HEIGHT = 720
 FONT_PATH = "resources/NotoSansArabic-Regular.ttf"
 
+
 class Tracker:
     def __init__(
         self,
@@ -96,8 +97,8 @@ class Tracker:
                 elif event == cv2.EVENT_RBUTTONDOWN and len(self.points) > 2:
                     self.drawing = False
                     cv2.setMouseCallback(
-                        f"Draw ROI {config.gate} ({self.gate_type})",
-                        lambda event, x, y, flags, param: None,
+                        f"Draw ROI ({self.gate_type})",
+                        lambda *args: None,
                     )
 
         roi_state = RoiState(self.gate_type)
@@ -225,27 +226,22 @@ class Tracker:
     def track_and_capture(
         self,
     ) -> Generator[tuple[Any, List[tuple[int, NDArray[Any]]]], None, None]:
-        max_retries = 10  # Increased retries for robustness
+        max_retries = 5
         for attempt in range(max_retries):
             try:
-                # Use GStreamer pipeline with software decoding
-                gst_pipeline = (
-                    f"rtspsrc location={self.source} latency=200 ! "
-                    f"rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! "
-                    f"appsink"
+                results = self.model.track(
+                    source=self.source,
+                    stream=True,
+                    persist=True,
+                    classes=[2, 3, 5, 7],
+                    verbose=False,
                 )
-                cap = cv2.VideoCapture(gst_pipeline, cv2.CAP_GSTREAMER)
-                if cap.isOpened():
-                    break
-                logger.warning(
-                    f"Gate {config.gate} ({self.gate_type}): Failed to open video stream (attempt {attempt + 1}/{max_retries})"
-                )
-                time.sleep(2)  # Increased delay for network stability
+                break
             except Exception as e:
                 logger.warning(
                     f"Gate {config.gate} ({self.gate_type}): Failed to start tracking (attempt {attempt + 1}/{max_retries}): {e}"
                 )
-                time.sleep(2)
+                time.sleep(1)
         else:
             logger.error(
                 f"Gate {config.gate} ({self.gate_type}): Failed to start tracking after {max_retries} attempts"
@@ -258,18 +254,11 @@ class Tracker:
             else None
         )
 
-        for result in self.model.track(
-            source=cap,
-            stream=True,
-            persist=True,
-            classes=[2, 3, 5, 7],
-            verbose=False,
-        ):
+        for result in results:
             original_frame = result.orig_img
-            # Comment out display-related code as per previous request
-            # display_frame = result.plot()
-            # if roi_poly is not None:
-            #     cv2.polylines(display_frame, [roi_poly], True, (0, 255, 0), 2)
+            display_frame = result.plot()
+            if roi_poly is not None:
+                cv2.polylines(display_frame, [roi_poly], True, (0, 255, 0), 2)
 
             current_track_ids = set()
             text_to_display = []
@@ -278,9 +267,6 @@ class Tracker:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     track_id = int(box.id) if box.id is not None else -1
                     if track_id == -1:
-                        logger.debug(
-                            f"Gate {config.gate} ({self.gate_type}): Skipping invalid track_id -1"
-                        )
                         continue
                     current_track_ids.add(track_id)
                     corners = [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]
@@ -368,10 +354,17 @@ class Tracker:
 
                     elif track_id in self.tracked_vehicles:
                         vehicle = self.tracked_vehicles[track_id]
-                        if vehicle["status"] == "pending" and vehicle["readings"]:
+                        if (
+                            vehicle["status"] == "pending"
+                            and vehicle["readings"]
+                        ):
                             # Vehicle left ROI early; decide based on readings
-                            self._handle_unauthorized(track_id, vehicle["first_frame"])
-                            vehicle = self.tracked_vehicles[track_id]  # Refresh vehicle data
+                            self._handle_unauthorized(
+                                track_id, vehicle["first_frame"]
+                            )
+                            vehicle = self.tracked_vehicles[
+                                track_id
+                            ]  # Refresh vehicle data
                         if vehicle["authorized"]:
                             logger.info(
                                 f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} left ROI - Closing gate"
@@ -388,8 +381,12 @@ class Tracker:
                     vehicle = self.tracked_vehicles[track_id]
                     if vehicle["status"] == "pending" and vehicle["readings"]:
                         # Vehicle no longer detected; decide based on readings
-                        self._handle_unauthorized(track_id, vehicle["first_frame"])
-                        vehicle = self.tracked_vehicles[track_id]  # Refresh vehicle data
+                        self._handle_unauthorized(
+                            track_id, vehicle["first_frame"]
+                        )
+                        vehicle = self.tracked_vehicles[
+                            track_id
+                        ]  # Refresh vehicle data
                     if vehicle["authorized"]:
                         logger.info(
                             f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} no longer detected - Closing gate"
@@ -401,23 +398,24 @@ class Tracker:
                         )
                     del self.tracked_vehicles[track_id]
 
-            # Comment out display-related code
-            # if text_to_display:
-            #     font_size = 24  # Suitable for resized frame
-            #     text_y_offset = display_frame.shape[0] - 10  # Bottom padding
-            #     for text in reversed(text_to_display):  # Bottom to top
-            #         text_img, mask = self._render_arabic_text(
-            #             text, font_size, display_frame.shape
-            #         )
-            #         text_y_offset -= (
-            #             text_img.shape[0] // len(text_to_display)
-            #         ) + 5  # Space between lines
-            #         display_frame[mask] = text_img[mask]
+            # Render text on the frame
+            if text_to_display:
+                font_size = 24  # Suitable for resized frame
+                text_y_offset = display_frame.shape[0] - 10  # Bottom padding
+                for text in reversed(text_to_display):  # Bottom to top
+                    text_img, mask = self._render_arabic_text(
+                        text, font_size, display_frame.shape
+                    )
+                    text_y_offset -= (
+                        text_img.shape[0] // len(text_to_display)
+                    ) + 5  # Space between lines
+                    display_frame[mask] = text_img[mask]
 
-            # yield display_frame, []
-            yield original_frame, []  # Use original_frame since display is disabled
+            yield display_frame, []
 
-    def _handle_unauthorized(self, track_id: int, frame: NDArray[Any] | None) -> None:
+    def _handle_unauthorized(
+        self, track_id: int, frame: NDArray[Any] | None
+    ) -> None:
         vehicle = self.tracked_vehicles[track_id]
         readings = vehicle["readings"]
         if readings:
