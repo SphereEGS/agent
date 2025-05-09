@@ -234,7 +234,7 @@ class Tracker:
                     source=self.source,
                     stream=True,
                     persist=True,
-                    classes=[2],
+                    classes=[2, 3, 5, 7],
                     verbose=False,
                 )
                 break
@@ -287,6 +287,7 @@ class Tracker:
                                 "attempts": 0,
                                 "plate": None,
                                 "authorized": None,
+                                "first_frame": original_frame.copy(),
                             }
                             logger.info(
                                 f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} entered ROI - Starting recognition"
@@ -324,16 +325,21 @@ class Tracker:
                                         f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} authorized with plate {license_text} - Opening gate"
                                     )
                                     self.gate_control.open(self.gate_type)
-                                    self.backend_sync.log_to_backend(
-                                        self.gate_type,
-                                        license_text,
-                                        True,
-                                        original_frame,
-                                        track_id,
-                                    )
+                                    if vehicle["first_frame"] is not None:
+                                        self.backend_sync.log_to_backend(
+                                            self.gate_type,
+                                            license_text,
+                                            True,
+                                            vehicle["first_frame"],
+                                            track_id,
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"Gate {config.gate} ({self.gate_type}): No first frame available for authorized vehicle {track_id}"
+                                        )
                             elif vehicle["attempts"] >= self.max_attempts:
                                 self._handle_unauthorized(
-                                    track_id, original_frame
+                                    track_id, vehicle["first_frame"]
                                 )
                             else:
                                 text_to_display.append(
@@ -357,7 +363,9 @@ class Tracker:
                             and vehicle["readings"]
                         ):
                             # Vehicle left ROI early; decide based on readings
-                            self._handle_unauthorized(track_id, original_frame)
+                            self._handle_unauthorized(
+                                track_id, vehicle["first_frame"]
+                            )
                             vehicle = self.tracked_vehicles[
                                 track_id
                             ]  # Refresh vehicle data
@@ -377,7 +385,9 @@ class Tracker:
                     vehicle = self.tracked_vehicles[track_id]
                     if vehicle["status"] == "pending" and vehicle["readings"]:
                         # Vehicle no longer detected; decide based on readings
-                        self._handle_unauthorized(track_id, original_frame)
+                        self._handle_unauthorized(
+                            track_id, vehicle["first_frame"]
+                        )
                         vehicle = self.tracked_vehicles[
                             track_id
                         ]  # Refresh vehicle data
@@ -390,7 +400,7 @@ class Tracker:
                         logger.info(
                             f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} no longer detected - No action taken"
                         )
-                        del self.tracked_vehicles[track_id]
+                    del self.tracked_vehicles[track_id]
 
             # Render text on the frame
             if text_to_display:
@@ -407,7 +417,9 @@ class Tracker:
 
             yield display_frame, []
 
-    def _handle_unauthorized(self, track_id: int, frame: NDArray[Any]) -> None:
+    def _handle_unauthorized(
+        self, track_id: int, frame: NDArray[Any] | None
+    ) -> None:
         vehicle = self.tracked_vehicles[track_id]
         readings = vehicle["readings"]
         if readings:
@@ -422,15 +434,25 @@ class Tracker:
             vehicle["status"] = "unauthorized"
             vehicle["authorized"] = False
             vehicle["plate"] = plate
-            self.backend_sync.log_to_backend(
-                self.gate_type, plate, False, frame, track_id
-            )
+            if frame is not None:
+                self.backend_sync.log_to_backend(
+                    self.gate_type, plate, False, frame, track_id
+                )
+            else:
+                logger.warning(
+                    f"Gate {config.gate} ({self.gate_type}): No first frame available for unauthorized vehicle {track_id}"
+                )
         else:
             logger.info(
                 f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} unauthorized after {vehicle['attempts']} attempts - No valid plate readings detected"
             )
             vehicle["status"] = "no_plate"
             vehicle["plate"] = "No plate found"
-            self.backend_sync.log_to_backend(
-                self.gate_type, "No plate found", False, frame, track_id
-            )
+            if frame is not None:
+                self.backend_sync.log_to_backend(
+                    self.gate_type, "No plate found", False, frame, track_id
+                )
+            else:
+                logger.warning(
+                    f"Gate {config.gate} ({self.gate_type}): No first frame available for vehicle {track_id} with no plate"
+                )

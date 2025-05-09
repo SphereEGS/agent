@@ -25,7 +25,6 @@ def main() -> None:
     backend_sync = BackendSync()
     gate_control = GateControl()
 
-    trackers: List[Tuple[Tracker, str]] = []
     updated_config: Dict[str, Any] = {
         "lpr_model": config.lpr_model,
         "backend_url": config.backend_url,
@@ -34,6 +33,45 @@ def main() -> None:
         "entry": config.entry,
         "exit": config.exit,
     }
+
+    # Handle ROI drawing if flags are provided
+    if args.roi_entry or args.roi_exit:
+        if args.roi_entry and config.entry:
+            entry_tracker = Tracker(
+                gate_type="Entry",
+                camera_url=config.entry["camera_url"],
+                roi_points=config.entry["roi"],
+                lpr=lpr,
+                backend_sync=backend_sync,
+                gate_control=gate_control,
+            )
+            new_roi = entry_tracker.draw_roi()
+            updated_config["entry"]["roi"] = new_roi
+            logger.info(
+                f"Gate {config.gate} (Entry): ROI updated in config.json"
+            )
+
+        if args.roi_exit and config.exit:
+            exit_tracker = Tracker(
+                gate_type="Exit",
+                camera_url=config.exit["camera_url"],
+                roi_points=config.exit["roi"],
+                lpr=lpr,
+                backend_sync=backend_sync,
+                gate_control=gate_control,
+            )
+            new_roi = exit_tracker.draw_roi()
+            updated_config["exit"]["roi"] = new_roi
+            logger.info(
+                f"Gate {config.gate} (Exit): ROI updated in config.json"
+            )
+
+        # Save updated config and exit
+        with open("config.json", "w") as f:
+            json.dump(updated_config, f, indent=4)
+        return
+
+    trackers: List[Tuple[Tracker, str]] = []
 
     if config.entry:
         entry_tracker = Tracker(
@@ -44,12 +82,6 @@ def main() -> None:
             backend_sync=backend_sync,
             gate_control=gate_control,
         )
-        if not config.entry["roi"] or args.roi_entry:
-            new_roi = entry_tracker.draw_roi()
-            updated_config["entry"]["roi"] = new_roi
-            logger.info(
-                f"Gate {config.gate} (Entry): ROI updated in config.json"
-            )
         trackers.append((entry_tracker, "Entry"))
 
     if config.exit:
@@ -61,12 +93,6 @@ def main() -> None:
             backend_sync=backend_sync,
             gate_control=gate_control,
         )
-        if not config.exit["roi"] or args.roi_exit:
-            new_roi = exit_tracker.draw_roi()
-            updated_config["exit"]["roi"] = new_roi
-            logger.info(
-                f"Gate {config.gate} (Exit): ROI updated in config.json"
-            )
         trackers.append((exit_tracker, "Exit"))
 
     with open("config.json", "w") as f:
