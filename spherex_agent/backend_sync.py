@@ -18,7 +18,9 @@ class BackendSync:
     def __init__(self) -> None:
         self.allowed_plates: set[str] = set()
         self.lock = threading.Lock()
-        self.fetch_thread = threading.Thread(target=self._fetch_loop, daemon=True)
+        self.fetch_thread = threading.Thread(
+            target=self._fetch_loop, daemon=True
+        )
         self.fetch_thread.start()
 
     def _fetch_loop(self) -> NoReturn:
@@ -28,7 +30,6 @@ class BackendSync:
                     f"{config.backend_url}/api/method/spherex.api.license_plate.get_authorized_plates",
                     params={"gate": config.gate},
                     verify=False,
-                    timeout=5,
                 )
                 if response.status_code == 200:
                     with self.lock:
@@ -60,9 +61,7 @@ class BackendSync:
     ) -> None:
         temp_file = ""
         try:
-            temp_file = (
-                f"gate_{config.gate}_{gate_type}_{track_id}_{int(time.time())}.jpg"
-            )
+            temp_file = f"gate_{config.gate}_{gate_type}_{track_id}_{int(time.time())}.jpg"
             cv2.imwrite(temp_file, frame)
             log_data: Dict[str, str | int] = {
                 "gate": config.gate,
@@ -76,16 +75,14 @@ class BackendSync:
                 upload_response = requests.post(
                     f"{config.backend_url}/api/method/spherex.api.upload_file",
                     files=files,
-                    verify=False,
-                    timeout=5,
                 )
                 upload_response.raise_for_status()
-                log_data["image"] = upload_response.json()["message"]["file_url"]
+                log_data["image"] = upload_response.json()["message"][
+                    "file_url"
+                ]
             response = requests.post(
                 f"{config.backend_url}/api/resource/Gate Entry Log",
                 json=log_data,
-                verify=False,
-                timeout=5,
             )
             response.raise_for_status()
             logger.info(
