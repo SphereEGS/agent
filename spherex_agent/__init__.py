@@ -99,50 +99,51 @@ def main() -> None:
     ]
 
     while True:
-        try:
-            for tracker, gate_type, generator in tracker_generators:
-                try:
-                    display_frame, _ = next(generator)
-                    if display_frame is None:
-                        logger.error(
-                            f"Gate {config.gate} ({gate_type}): Tracker stopped unexpectedly"
-                        )
-                        return
+        pass
+    #     try:
+    #         for tracker, gate_type, generator in tracker_generators:
+    #             try:
+    #                 display_frame, _ = next(generator)
+    #                 if display_frame is None:
+    #                     logger.error(
+    #                         f"Gate {config.gate} ({gate_type}): Tracker stopped unexpectedly"
+    #                     )
+    #                     return
 
-                    # Resize frame to fit within MAX_DISPLAY_HEIGHT while preserving aspect ratio
-                    orig_height, orig_width = display_frame.shape[:2]
-                    scale_factor = min(MAX_DISPLAY_HEIGHT / orig_height, 1.0)
-                    display_height = int(orig_height * scale_factor)
-                    display_width = int(orig_width * scale_factor)
-                    resized_frame = cv2.resize(
-                        display_frame,
-                        (display_width, display_height),
-                        interpolation=cv2.INTER_AREA,
-                    )
+    #                 # Resize frame to fit within MAX_DISPLAY_HEIGHT while preserving aspect ratio
+    #                 orig_height, orig_width = display_frame.shape[:2]
+    #                 scale_factor = min(MAX_DISPLAY_HEIGHT / orig_height, 1.0)
+    #                 display_height = int(orig_height * scale_factor)
+    #                 display_width = int(orig_width * scale_factor)
+    #                 resized_frame = cv2.resize(
+    #                     display_frame,
+    #                     (display_width, display_height),
+    #                     interpolation=cv2.INTER_AREA,
+    #                 )
 
-                    cv2.imshow(
-                        f"Vehicle Tracking ({gate_type})", resized_frame
-                    )
-                except StopIteration:
-                    logger.error(
-                        f"Gate {config.gate} ({gate_type}): Tracker stream ended"
-                    )
-                    return
-                except Exception as e:
-                    logger.error(
-                        f"Gate {config.gate} ({gate_type}): Tracker error: {e}"
-                    )
-                    continue
+    #                 cv2.imshow(
+    #                     f"Vehicle Tracking ({gate_type})", resized_frame
+    #                 )
+    #             except StopIteration:
+    #                 logger.error(
+    #                     f"Gate {config.gate} ({gate_type}): Tracker stream ended"
+    #                 )
+    #                 return
+    #             except Exception as e:
+    #                 logger.error(
+    #                     f"Gate {config.gate} ({gate_type}): Tracker error: {e}"
+    #                 )
+    #                 continue
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
-                break
-        except Exception as e:
-            logger.error(f"Gate {config.gate}: Error processing frame: {e}")
-            break
+    #         if cv2.waitKey(1) & 0xFF == ord("q"):
+    #             break
+    #     except Exception as e:
+    #         logger.error(f"Gate {config.gate}: Error processing frame: {e}")
+    #         break
 
-    for _, gate_type in trackers:
-        cv2.destroyWindow(f"Vehicle Tracking ({gate_type})")
-    cv2.destroyAllWindows()
+    # for _, gate_type in trackers:
+    #     cv2.destroyWindow(f"Vehicle Tracking ({gate_type})")
+    # cv2.destroyAllWindows()
 
 
 if __name__ == "__main__":
