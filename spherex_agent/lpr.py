@@ -162,6 +162,7 @@ class LPR:
         plate_img = self.find_plate(image)
         if plate_img is None:
             return None
+
         results: List[Any] = self.model.predict(  # type: ignore
             plate_img,
             conf=0.25,
