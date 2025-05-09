@@ -27,7 +27,6 @@ class Tracker:
         gate_type: str,
         camera_url: str,
         roi_points: List[List[int]],
-        lpr: LPR,
         backend_sync: BackendSync,
         gate_control: GateControl,
         model_path: str = "yolo11n.pt",
@@ -38,11 +37,11 @@ class Tracker:
 
         self.roi_points: List[List[int]] = roi_points
         self.source: str = camera_url
-        self.lpr = lpr
+        self.lpr = LPR()
         self.backend_sync = backend_sync
         self.gate_control = gate_control
         self.tracked_vehicles: Dict[int, Dict[str, Any]] = {}
-        self.max_attempts = 20
+        self.max_attempts = 30
 
         if config.gpu and os.path.exists(tensorrt_path):
             logger.info(

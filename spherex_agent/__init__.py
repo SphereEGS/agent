@@ -41,7 +41,6 @@ def main() -> None:
                 gate_type="Entry",
                 camera_url=config.entry["camera_url"],
                 roi_points=config.entry["roi"],
-                lpr=lpr,
                 backend_sync=backend_sync,
                 gate_control=gate_control,
             )
