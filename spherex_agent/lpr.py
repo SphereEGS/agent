@@ -162,9 +162,8 @@ class LPR:
         plate_img = self.find_plate(image)
         if plate_img is None:
             return None
-        preprocessed = self.preprocess_image(plate_img)
         results: List[Any] = self.model.predict(  # type: ignore
-            preprocessed,
+            plate_img,
             conf=0.25,
             iou=0.45,
             imgsz=PLATE_DETECTION_SIZE,
