@@ -3,6 +3,7 @@ import os
 import sys
 from dotenv import load_dotenv
 from logging.handlers import RotatingFileHandler
+import torch
 
 # Load environment variables from .env file
 load_dotenv()
@@ -45,6 +46,33 @@ file_handler.setFormatter(log_format)
 # Add handlers to the logger
 logger.addHandler(console_handler)
 logger.addHandler(file_handler)
+
+# GPU Configuration
+USE_GPU = os.getenv("USE_GPU", "true").lower() == "true"  # Default to True if available
+GPU_DEVICE = os.getenv("GPU_DEVICE", "cuda:0")  # Default to first GPU
+GPU_MEMORY_FRACTION = float(os.getenv("GPU_MEMORY_FRACTION", "0.8"))  # Limit GPU memory usage
+
+# Check for GPU availability and configure
+if USE_GPU and torch.cuda.is_available():
+    DEVICE = GPU_DEVICE
+    # Set memory growth to avoid taking all GPU memory
+    try:
+        # Set memory growth for PyTorch
+        torch.cuda.set_per_process_memory_fraction(GPU_MEMORY_FRACTION)
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+        logger.info(f"GPU available: {gpu_name} with {gpu_memory:.2f} GB memory")
+        logger.info(f"Using device: {DEVICE} with memory fraction: {GPU_MEMORY_FRACTION}")
+    except Exception as e:
+        logger.error(f"Error configuring GPU: {str(e)}")
+        DEVICE = "cpu"
+        USE_GPU = False
+else:
+    DEVICE = "cpu"
+    if not torch.cuda.is_available():
+        logger.warning("No GPU detected. Using CPU for inference.")
+    elif not USE_GPU:
+        logger.info("GPU usage disabled in configuration. Using CPU for inference.")
 
 # Gate identification
 GATE = os.getenv("GATE", "A1")
@@ -123,6 +151,7 @@ LPR_MODEL_PATH = os.getenv(
     "LPR_MODEL_PATH", "models/license_plate_recognition.pt"
 )
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "models/yolo11n.pt")
+YOLO_NAS_MODEL_PATH = os.getenv("YOLO_NAS_MODEL_PATH", "models/yolo_nas_m.pt")
 
 # Update interval
 UPDATE_INTERVAL = int(os.getenv("UPDATE_INTERVAL", "60"))  # seconds

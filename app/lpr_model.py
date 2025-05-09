@@ -10,6 +10,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from functools import partial
 import threading
 import queue
+import torch
 from typing import Dict, Tuple, Optional, List, Callable, Any
 
 from .config import (
@@ -17,6 +18,8 @@ from .config import (
     FONT_PATH,
     LPR_MODEL_PATH,
     logger,
+    DEVICE,
+    USE_GPU,
 )
 
 # Use a lower resolution for license plate detection to speed up inference
@@ -46,6 +49,10 @@ def preprocess_image(image):
 def _find_plate_in_image(model_path, image):
     try:
         model = YOLO(model_path)
+        # Set model to use GPU if available
+        if USE_GPU and torch.cuda.is_available():
+            model.to(DEVICE)
+        
         # Preprocess the image before detection
         preprocessed = preprocess_image(image)
         
@@ -54,7 +61,8 @@ def _find_plate_in_image(model_path, image):
             conf=0.25,
             iou=0.5,
             verbose=False,
-            imgsz=PLATE_DETECTION_SIZE
+            imgsz=PLATE_DETECTION_SIZE,
+            device=DEVICE
         )
         
         if not results or len(results[0].boxes) == 0:
@@ -100,12 +108,17 @@ def _find_plate_in_image(model_path, image):
 def _recognize_plate(model_path, plate_image):
     try:
         model = YOLO(model_path)
+        # Set model to use GPU if available
+        if USE_GPU and torch.cuda.is_available():
+            model.to(DEVICE)
+        
         results = model.predict(
             plate_image, 
             conf=0.25,
             iou=0.45,
             imgsz=PLATE_DETECTION_SIZE,
-            verbose=False
+            verbose=False,
+            device=DEVICE
         )
         
         if not results or len(results[0].boxes) == 0:
@@ -156,6 +169,20 @@ class PlateProcessor:
             
             # Initialize a local model for synchronous operations
             self.lpr_model = YOLO(LPR_MODEL_PATH)
+            
+            # Set model to use GPU if available
+            if USE_GPU and torch.cuda.is_available():
+                self.lpr_model.to(DEVICE)
+                logger.info(f"LPR model using device: {DEVICE}")
+                
+                # Log GPU usage information
+                if DEVICE.startswith("cuda"):
+                    gpu_name = torch.cuda.get_device_name(0)
+                    total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3  # Convert to GB
+                    logger.info(f"LPR model using GPU: {gpu_name} with {total_memory:.2f} GB total memory")
+            else:
+                logger.warning("LPR model running on CPU")
+                
             logger.info("LPR model loaded successfully")
             self.font_path = FONT_PATH
             

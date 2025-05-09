@@ -5,10 +5,11 @@ import threading
 import time
 import os
 import os.path as osp
+import torch
 from collections import defaultdict
-from ultralytics import YOLO
+from ultralytics import YOLO, NAS
 
-from .config import logger, YOLO_MODEL_PATH
+from .config import logger, YOLO_MODEL_PATH, YOLO_NAS_MODEL_PATH, DEVICE, USE_GPU
 from .lpr_model import PlateProcessor
 
 # Vehicle classes from COCO dataset that we want to detect
@@ -24,19 +25,47 @@ class VehicleTracker:
             # Ensure models directory exists
             os.makedirs("models", exist_ok=True)
             
-            # Use absolute path for model
-            model_path = osp.abspath(YOLO_MODEL_PATH)
-            logger.info(f"[TRACKER:{camera_id}] Loading YOLO model from: {model_path}")
+            # Try to use YOLO-NAS model first, but fall back to regular YOLO if not available
+            if os.path.exists(YOLO_NAS_MODEL_PATH):
+                model_path = osp.abspath(YOLO_NAS_MODEL_PATH)
+                logger.info(f"[TRACKER:{camera_id}] Loading YOLO-NAS model from: {model_path}")
+            else:
+                model_path = osp.abspath(YOLO_MODEL_PATH)
+                logger.info(f"[TRACKER:{camera_id}] YOLO-NAS model not found, loading regular YOLO model from: {model_path}")
             
             if not osp.exists(model_path):
                 logger.error(f"[TRACKER:{camera_id}] Model not found at {model_path}")
                 raise FileNotFoundError(f"Model file not found: {model_path}")
                 
             try:
-                self.model = YOLO(model_path)
-                logger.info(f"[TRACKER:{camera_id}] YOLO model loaded successfully")
+                # Check if it's a YOLO-NAS model path
+                if "nas" in model_path.lower():
+                    logger.info(f"[TRACKER:{camera_id}] Loading YOLO-NAS model...")
+                    self.model = NAS(model_path)
+                else:
+                    # Fall back to regular YOLO model
+                    logger.info(f"[TRACKER:{camera_id}] Loading regular YOLO model...")
+                    self.model = YOLO(model_path)
+                    
+                # Set model to use GPU if available
+                if USE_GPU and torch.cuda.is_available():
+                    self.model.to(DEVICE)
+                    logger.info(f"[TRACKER:{camera_id}] Vehicle detection model using device: {DEVICE}")
+                
+                    # Log GPU usage information
+                    if DEVICE.startswith("cuda"):
+                        gpu_name = torch.cuda.get_device_name(0)
+                        total_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3  # Convert to GB
+                        logger.info(f"[TRACKER:{camera_id}] Using GPU: {gpu_name} with {total_memory:.2f} GB total memory")
+                        # Monitor GPU memory periodically to log usage
+                        self.last_gpu_log_time = time.time()
+                        self.gpu_log_interval = 300  # Log every 5 minutes
+                else:
+                    logger.warning(f"[TRACKER:{camera_id}] Vehicle detection model running on CPU")
+                
+                logger.info(f"[TRACKER:{camera_id}] Model loaded successfully")
             except Exception as e:
-                logger.error(f"[TRACKER:{camera_id}] Error loading YOLO model: {str(e)}")
+                logger.error(f"[TRACKER:{camera_id}] Error loading model: {str(e)}")
                 raise
             
             # Determine ROI config path if not provided
@@ -503,170 +532,167 @@ class VehicleTracker:
         return True, activity_detected
 
     def detect_vehicles(self, frame):
-        """Detect and track vehicles in frame, with CPU optimization using trigger system."""
+        """
+        Detect and track vehicles in the given frame.
+        Returns metadata about the detected vehicles and visualization frame.
+        """
         if frame is None:
-            logger.warning("[TRACKER] Received None frame for detection")
-            return False, None
+            logger.warning("[TRACKER] Empty frame provided to detect_vehicles")
+            return None, None
             
         try:
-            # Calculate FPS
-            self.curr_frame_time = time.time()
-            if self.prev_frame_time != 0:
-                self.fps = 1 / (self.curr_frame_time - self.prev_frame_time)
-            self.prev_frame_time = self.curr_frame_time
+            # Start performance timer
+            start_time = time.time()
             
-            # Create visualization frame
+            # Make a copy of the input frame to avoid modifying the original
             vis_frame = frame.copy()
             
-            # Scale ROI to match current frame dimensions
+            # Scale the ROI polygon to match the current frame
             self.roi_polygon = self._scale_roi_to_frame(frame)
             
-            # Draw ROI first
-            if self.roi_polygon is not None:
-                # Draw ROI with a thicker line and brighter color
-                cv2.polylines(vis_frame, [self.roi_polygon], True, (0, 255, 0), 3)  # Bright green, thick line
+            # Check if we should process this frame based on motion detection
+            should_process = self._should_process_frame(frame)
+            
+            # Skip processing if motion detection indicates no activity
+            if not should_process:
+                with self.roi_lock:
+                    # Still draw the ROI on the visualization frame even when not processing
+                    if self.roi_polygon is not None:
+                        vis_frame = self.plate_processor.visualize_roi(vis_frame, self.roi_polygon)
                 
-                # Fill the ROI with semi-transparent green
-                overlay = vis_frame.copy()
-                cv2.fillPoly(overlay, [self.roi_polygon], (0, 200, 0, 50))  # Semi-transparent green
-                cv2.addWeighted(overlay, 0.15, vis_frame, 0.85, 0, vis_frame)  # Subtle transparency
+                self._calculate_fps()
+                # Add FPS text to visualization frame
+                cv2.putText(vis_frame, f'FPS: {self.fps:.1f}', (20, 40), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
                 
-                # Add a label at the first point of the ROI polygon
-                roi_x, roi_y = self.roi_polygon[0]
-                cv2.putText(vis_frame, "ROI", (roi_x, roi_y - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
-                cv2.putText(vis_frame, "ROI", (roi_x, roi_y - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 1)  # Green text
-            
-            # Check if we should process this frame
-            should_process, activity_detected = self._should_process_frame(frame)
-            
-            # Display processing status
-            status_text = "ACTIVE" if self.processing_active else "IDLE"
-            status_color = (0, 255, 0) if self.processing_active else (0, 0, 255)
-            cv2.putText(vis_frame, f"Processing: {status_text}", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
-            cv2.putText(vis_frame, f"Processing: {status_text}", (10, 30),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 1)  # Colored text
-            
-            # Display FPS
-            fps_text = f"FPS: {self.fps:.1f}"
-            cv2.putText(vis_frame, fps_text, (10, 60),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)  # Black outline
-            cv2.putText(vis_frame, fps_text, (10, 60),
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)  # White text
-            
-            # Only run detection if we should process this frame
-            if should_process:
-                # Run detection
-                logger.debug("[TRACKER] Running YOLO detection and tracking")
-                results = self.model.track(
-                    frame,
-                    persist=True,
-                    classes=list(VEHICLE_CLASSES.keys()),
-                    conf=0.3,
-                    iou=0.45,
-                    verbose=False
-                )
+                # Indicate idle state on visualization
+                cv2.putText(vis_frame, "IDLE: No Motion Detected", (20, 80), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
                 
-                # Process detections if we have any
-                if len(results) > 0 and hasattr(results[0].boxes, 'id') and results[0].boxes.id is not None:
-                    try:
-                        boxes = results[0].boxes.xyxy.cpu().numpy()
-                        track_ids = results[0].boxes.id.int().cpu().tolist()
-                        class_ids = results[0].boxes.cls.int().cpu().tolist()
-                        
-                        logger.debug(f"[TRACKER] Detected {len(track_ids)} vehicles: {dict(zip(track_ids, [VEHICLE_CLASSES.get(c, 'unknown') for c in class_ids]))}")
-                        
-                        # Process each detected vehicle
-                        vehicles_in_roi = 0
-                        vehicles_processed_for_plates = 0
-                        
-                        for box, track_id, class_id in zip(boxes, track_ids, class_ids):
-                            if class_id not in VEHICLE_CLASSES:
-                                continue
-                                
-                            # Check if vehicle is in ROI
-                            is_in_roi = self._is_vehicle_in_roi(box)
-                            
-                            # Update vehicle state for tracking
-                            self._update_vehicle_state(track_id, frame, box)
-                            
-                            # Only process license plates for vehicles in ROI
-                            if is_in_roi:
-                                vehicles_in_roi += 1
-                                # Keep processing active when vehicles are in ROI
-                                self.last_activity_time = time.time()
-                                
-                                # Only try to detect license plate if not already detected for this vehicle
-                                if track_id not in self.detected_plates and track_id in self.frame_buffer:
-                                    # Process license plate if we have enough frames buffered
-                                    if len(self.frame_buffer[track_id]) >= 3:
-                                        vehicles_processed_for_plates += 1
-                                        # Get best frame from buffer
-                                        best_frame = self._select_best_frame(self.frame_buffer[track_id])
-                                        if best_frame is not None:
-                                            # Process the plate on the best quality frame
-                                            logger.info(f"[TRACKER] Processing license plate for vehicle {track_id} using best quality frame")
-                                            self._process_plate(best_frame, track_id)
-                                        else:
-                                            logger.warning(f"[TRACKER] Could not select best frame for vehicle {track_id}")
-                        
-                        if vehicles_in_roi > 0:
-                            logger.debug(f"[TRACKER] {vehicles_in_roi} vehicles in ROI, {vehicles_processed_for_plates} processed for plates")
-                        
-                        # Draw all detections on the visualization frame
-                        vis_frame = self.visualize_detection(vis_frame, boxes, track_ids, class_ids)
-                    except Exception as e:
-                        logger.error(f"[TRACKER] Error processing detection boxes: {str(e)}")
-                        
-                # Cleanup stale vehicles periodically
-                self._cleanup_stale_vehicles()
-            else:
-                # Still show the last detected plate info when idle
-                h, w = vis_frame.shape[:2]
-                
-                # Draw smaller background rectangle for better aesthetics
-                cv2.rectangle(vis_frame, (10, h-70), (350, h-10), (0, 0, 0), -1)
-                cv2.rectangle(vis_frame, (10, h-70), (350, h-10), (255, 255, 255), 2)
-                
-                # Display last plate info or "No plate detected" message
-                if hasattr(self, 'last_recognized_plate') and self.last_recognized_plate is not None:
-                    plate_text = self.last_recognized_plate
-                    auth_status = "Authorized" if self.last_plate_authorized else "Not Authorized"
-                    auth_color = (0, 255, 0) if self.last_plate_authorized else (0, 0, 255)
-                else:
-                    plate_text = "No plate detected"
-                    auth_status = "N/A"
-                    auth_color = (128, 128, 128)
-                
-                # Display the plate info on idle frames too
-                cv2.putText(vis_frame, f"Last Plate: {plate_text}", 
-                           (20, h-45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
-                cv2.putText(vis_frame, f"Last Plate: {plate_text}", 
-                           (20, h-45), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-                cv2.putText(vis_frame, f"Status: {auth_status}", 
-                           (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-                cv2.putText(vis_frame, f"Status: {auth_status}", 
-                           (20, h-20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, auth_color, 1)
+                return None, vis_frame
             
-            # If activity was just detected, show an indicator
-            if activity_detected:
-                h, w = vis_frame.shape[:2]
-                cv2.putText(vis_frame, "ACTIVITY DETECTED", (w//2-150, 30),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+            # Get the current frame dimensions
+            height, width = frame.shape[:2]
             
-            # Display the visualization frame in a camera-specific window
-            window_name = f'Detections - {self.camera_id}'
-            cv2.imshow(window_name, vis_frame)
-            cv2.waitKey(1)
+            # Clean up stale vehicle tracks
+            self._cleanup_stale_vehicles()
             
-            # Return the visualization frame
-            return True, vis_frame
+            # Run detection on frame - update to use updated model interface 
+            results = self.model.predict(
+                frame,
+                conf=0.25,  # Confidence threshold
+                iou=0.45,   # NMS IoU threshold
+                classes=list(VEHICLE_CLASSES.keys()),  # Only detect vehicle classes
+                verbose=False,
+                device=DEVICE,
+            )
+            
+            if results and len(results) > 0:
+                # Get the first result (only one image was processed)
+                result = results[0]
+                
+                # Extract bounding boxes, confidence scores, and class IDs from results
+                boxes = []
+                confidences = []
+                class_ids = []
+                
+                # YOLO-NAS and regular YOLO have similar result formats
+                for box, conf, cls in zip(result.boxes.xyxy, result.boxes.conf, result.boxes.cls):
+                    class_id = int(cls.item())
+                    
+                    if class_id in VEHICLE_CLASSES:
+                        x1, y1, x2, y2 = box.cpu().numpy()
+                        boxes.append([int(x1), int(y1), int(x2), int(y2)])
+                        confidences.append(float(conf))
+                        class_ids.append(class_id)
+                
+                # Convert to numpy arrays for easier processing
+                if boxes:
+                    boxes = np.array(boxes)
+                    confidences = np.array(confidences)
+                    class_ids = np.array(class_ids)
 
+                    # Filter detections by ROI if enabled
+                    if self.roi_polygon is not None:
+                        filtered_indices = []
+                        
+                        for i, box in enumerate(boxes):
+                            if self._is_vehicle_in_roi(box):
+                                filtered_indices.append(i)
+                        
+                        if filtered_indices:
+                            boxes = boxes[filtered_indices]
+                            confidences = confidences[filtered_indices]
+                            class_ids = class_ids[filtered_indices]
+                        else:
+                            boxes = np.array([])
+                            confidences = np.array([])
+                            class_ids = np.array([])
+                    
+                    # Create or update vehicle tracking
+                    track_ids = []
+                    for i, box in enumerate(boxes):
+                        # Use box coordinates as simple tracking ID for now
+                        # In a real system, you would use a more sophisticated tracking algorithm
+                        track_id = f"vehicle_{i}"
+                        track_ids.append(track_id)
+                        
+                        # Update vehicle state
+                        self._update_vehicle_state(track_id, frame, box)
+                    
+                    # Draw bounding boxes and other visualization elements
+                    vis_frame = self.visualize_detection(vis_frame, boxes, track_ids, class_ids)
+                else:
+                    # No vehicles found after filtering
+                    with self.roi_lock:
+                        # Still draw ROI if available
+                        if self.roi_polygon is not None:
+                            vis_frame = self.plate_processor.visualize_roi(vis_frame, self.roi_polygon)
+            else:
+                # No detections at all
+                with self.roi_lock:
+                    # Still draw ROI if available
+                    if self.roi_polygon is not None:
+                        vis_frame = self.plate_processor.visualize_roi(vis_frame, self.roi_polygon)
+            
+            # Calculate and display FPS
+            self._calculate_fps()
+            cv2.putText(vis_frame, f'FPS: {self.fps:.1f}', (20, 40), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
+            # Measure processing time for logging
+            end_time = time.time()
+            processing_time = (end_time - start_time) * 1000  # Convert to ms
+            
+            # Periodically log GPU memory usage
+            if USE_GPU and DEVICE.startswith("cuda") and hasattr(self, 'last_gpu_log_time'):
+                current_time = time.time()
+                if current_time - self.last_gpu_log_time > self.gpu_log_interval:
+                    self.last_gpu_log_time = current_time
+                    allocated_memory = torch.cuda.memory_allocated(0) / 1024**3  # GB
+                    reserved_memory = torch.cuda.memory_reserved(0) / 1024**3  # GB
+                    logger.info(f"[TRACKER:{self.camera_id}] GPU memory usage: {allocated_memory:.2f} GB allocated, {reserved_memory:.2f} GB reserved")
+            
+            # Create metadata about detected vehicles
+            metadata = {
+                "vehicles": len(boxes) if 'boxes' in locals() and len(boxes) > 0 else 0,
+                "processing_time_ms": processing_time,
+                "fps": self.fps,
+                "tracked_vehicles": list(self.tracked_vehicles.keys()),
+                "detected_plates": self.detected_plates,
+            }
+            
+            return metadata, vis_frame
+            
         except Exception as e:
-            logger.error(f"[TRACKER] Error in detect_vehicles: {str(e)}")
-            return False, None
+            logger.error(f"[TRACKER:{self.camera_id}] Error in detect_vehicles: {str(e)}")
+            # Try to return a basic frame with error message
+            if 'frame' in locals() and frame is not None:
+                error_frame = frame.copy()
+                cv2.putText(error_frame, "Detection Error", (50, 50), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                return None, error_frame
+            return None, None
 
     def _extract_vehicle_image(self, frame, box):
         """Extract vehicle image from frame using bounding box"""
@@ -736,3 +762,10 @@ class VehicleTracker:
     def get_detected_plate(self, track_id):
         """Get the detected plate for a specific vehicle ID"""
         return self.detected_plates.get(track_id, None)
+
+    def _calculate_fps(self):
+        """Calculate and update the FPS for the current frame"""
+        current_time = time.time()
+        if self.prev_frame_time != 0:
+            self.fps = 1 / (current_time - self.prev_frame_time)
+        self.prev_frame_time = current_time
