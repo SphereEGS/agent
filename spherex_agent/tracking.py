@@ -20,12 +20,16 @@ import time
 MAX_DISPLAY_HEIGHT = 720
 FONT_PATH = "resources/NotoSansArabic-Regular.ttf"
 
+
 class Tracker:
     def __init__(
         self,
         gate_type: str,
         camera_url: str,
         roi_points: List[List[int]],
+        lpr: LPR,
+        backend_sync: BackendSync,
+        gate_control: GateControl,
         model_path: str = "yolo11n.pt",
     ) -> None:
         self.gate_type = gate_type
@@ -34,9 +38,9 @@ class Tracker:
 
         self.roi_points: List[List[int]] = roi_points
         self.source: str = camera_url
-        self.lpr = LPR()
-        self.backend_sync = BackendSync()
-        self.gate_control = GateControl()
+        self.lpr = lpr
+        self.backend_sync = backend_sync
+        self.gate_control = gate_control
         self.tracked_vehicles: Dict[int, Dict[str, Any]] = {}
         self.max_attempts = 20
 
@@ -264,6 +268,9 @@ class Tracker:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     track_id = int(box.id) if box.id is not None else -1
                     if track_id == -1:
+                        logger.debug(
+                            f"Gate {config.gate} ({self.gate_type}): Skipping invalid track_id -1"
+                        )
                         continue
                     current_track_ids.add(track_id)
                     corners = [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]
@@ -345,10 +352,15 @@ class Tracker:
 
                     elif track_id in self.tracked_vehicles:
                         vehicle = self.tracked_vehicles[track_id]
-                        if vehicle["status"] == "pending" and vehicle["readings"]:
+                        if (
+                            vehicle["status"] == "pending"
+                            and vehicle["readings"]
+                        ):
                             # Vehicle left ROI early; decide based on readings
                             self._handle_unauthorized(track_id, original_frame)
-                            vehicle = self.tracked_vehicles[track_id]  # Refresh vehicle data
+                            vehicle = self.tracked_vehicles[
+                                track_id
+                            ]  # Refresh vehicle data
                         if vehicle["authorized"]:
                             logger.info(
                                 f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} left ROI - Closing gate"
@@ -366,7 +378,9 @@ class Tracker:
                     if vehicle["status"] == "pending" and vehicle["readings"]:
                         # Vehicle no longer detected; decide based on readings
                         self._handle_unauthorized(track_id, original_frame)
-                        vehicle = self.tracked_vehicles[track_id]  # Refresh vehicle data
+                        vehicle = self.tracked_vehicles[
+                            track_id
+                        ]  # Refresh vehicle data
                     if vehicle["authorized"]:
                         logger.info(
                             f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} no longer detected - Closing gate"

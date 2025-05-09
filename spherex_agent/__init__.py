@@ -5,6 +5,10 @@ from typing import Any, Dict, List, Tuple
 from .config import config
 from .logging import logger
 from .tracking import Tracker, MAX_DISPLAY_HEIGHT
+from .lpr import LPR
+from .backend_sync import BackendSync
+from .gate_control import GateControl
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="SphereX Agent")
@@ -15,6 +19,11 @@ def main() -> None:
         "--roi-exit", action="store_true", help="Redraw ROI for Exit gate"
     )
     args = parser.parse_args()
+
+    # Initialize shared components once
+    lpr = LPR()
+    backend_sync = BackendSync()
+    gate_control = GateControl()
 
     trackers: List[Tuple[Tracker, str]] = []
     updated_config: Dict[str, Any] = {
@@ -31,6 +40,9 @@ def main() -> None:
             gate_type="Entry",
             camera_url=config.entry["camera_url"],
             roi_points=config.entry["roi"],
+            lpr=lpr,
+            backend_sync=backend_sync,
+            gate_control=gate_control,
         )
         if not config.entry["roi"] or args.roi_entry:
             new_roi = entry_tracker.draw_roi()
@@ -45,6 +57,9 @@ def main() -> None:
             gate_type="Exit",
             camera_url=config.exit["camera_url"],
             roi_points=config.exit["roi"],
+            lpr=lpr,
+            backend_sync=backend_sync,
+            gate_control=gate_control,
         )
         if not config.exit["roi"] or args.roi_exit:
             new_roi = exit_tracker.draw_roi()
@@ -85,7 +100,9 @@ def main() -> None:
                         interpolation=cv2.INTER_AREA,
                     )
 
-                    cv2.imshow(f"Vehicle Tracking ({gate_type})", resized_frame)
+                    cv2.imshow(
+                        f"Vehicle Tracking ({gate_type})", resized_frame
+                    )
                 except StopIteration:
                     logger.error(
                         f"Gate {config.gate} ({gate_type}): Tracker stream ended"
@@ -106,6 +123,7 @@ def main() -> None:
     for _, gate_type in trackers:
         cv2.destroyWindow(f"Vehicle Tracking ({gate_type})")
     cv2.destroyAllWindows()
+
 
 if __name__ == "__main__":
     main()

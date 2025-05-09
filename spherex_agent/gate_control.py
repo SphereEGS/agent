@@ -22,7 +22,7 @@ class GateControl:
             self.gate = None
         self.lock = threading.Lock()
 
-    def open(self, gate_type: str):
+    def open(self, gate_type: str) -> None:
         with self.lock:
             if not self.gate:
                 logger.error(
