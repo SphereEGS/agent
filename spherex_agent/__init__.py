@@ -5,7 +5,6 @@ from typing import Any, Dict, List, Tuple
 from .config import config
 from .logging import logger
 from .tracking import Tracker, MAX_DISPLAY_HEIGHT
-from .lpr import LPR
 from .backend_sync import BackendSync
 from .gate_control import GateControl
 
@@ -20,7 +19,6 @@ def main() -> None:
     args = parser.parse_args()
 
     # Initialize shared components once
-    lpr = LPR()
     backend_sync = BackendSync()
     gate_control = GateControl()
 
@@ -40,7 +38,6 @@ def main() -> None:
                 gate_type="Entry",
                 camera_url=config.entry["camera_url"],
                 roi_points=config.entry["roi"],
-                lpr=lpr,
                 backend_sync=backend_sync,
                 gate_control=gate_control,
             )
@@ -55,7 +52,6 @@ def main() -> None:
                 gate_type="Exit",
                 camera_url=config.exit["camera_url"],
                 roi_points=config.exit["roi"],
-                lpr=lpr,
                 backend_sync=backend_sync,
                 gate_control=gate_control,
             )
@@ -77,7 +73,6 @@ def main() -> None:
             gate_type="Entry",
             camera_url=config.entry["camera_url"],
             roi_points=config.entry["roi"],
-            lpr=lpr,
             backend_sync=backend_sync,
             gate_control=gate_control,
         )
@@ -88,7 +83,6 @@ def main() -> None:
             gate_type="Exit",
             camera_url=config.exit["camera_url"],
             roi_points=config.exit["roi"],
-            lpr=lpr,
             backend_sync=backend_sync,
             gate_control=gate_control,
         )
