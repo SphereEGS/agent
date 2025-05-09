@@ -15,6 +15,7 @@ from PIL import Image, ImageDraw, ImageFont
 import os
 import arabic_reshaper
 from bidi.algorithm import get_display
+import time
 
 MAX_DISPLAY_HEIGHT = 720
 FONT_PATH = "resources/NotoSansArabic-Regular.ttf"
@@ -99,11 +100,20 @@ class Tracker:
 
         roi_state = RoiState(self.gate_type)
 
-        cap = cv2.VideoCapture(self.source)
-        if not cap.isOpened():
-            raise ValueError(
-                f"Gate {config.gate} ({self.gate_type}): Could not open video stream"
+        max_retries = 5
+        for attempt in range(max_retries):
+            cap = cv2.VideoCapture(self.source)
+            if cap.isOpened():
+                break
+            logger.warning(
+                f"Gate {config.gate} ({self.gate_type}): Failed to open video stream (attempt {attempt + 1}/{max_retries})"
             )
+            time.sleep(1)
+        else:
+            raise ValueError(
+                f"Gate {config.gate} ({self.gate_type}): Could not open video stream after {max_retries} attempts"
+            )
+
         ret, frame = cap.read()
         if not ret:
             cap.release()
@@ -213,13 +223,28 @@ class Tracker:
     def track_and_capture(
         self,
     ) -> Generator[tuple[Any, List[tuple[int, NDArray[Any]]]], None, None]:
-        results = self.model.track(
-            source=self.source,
-            stream=True,
-            persist=True,
-            classes=[2],
-            verbose=False,
-        )
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                results = self.model.track(
+                    source=self.source,
+                    stream=True,
+                    persist=True,
+                    classes=[2],
+                    verbose=False,
+                )
+                break
+            except Exception as e:
+                logger.warning(
+                    f"Gate {config.gate} ({self.gate_type}): Failed to start tracking (attempt {attempt + 1}/{max_retries}): {e}"
+                )
+                time.sleep(1)
+        else:
+            logger.error(
+                f"Gate {config.gate} ({self.gate_type}): Failed to start tracking after {max_retries} attempts"
+            )
+            return
+
         roi_poly = (
             np.array(self.roi_points, np.int32)
             if self.roi_points and len(self.roi_points) > 2
@@ -238,6 +263,11 @@ class Tracker:
                 for box in result.boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
                     track_id = int(box.id) if box.id is not None else -1
+                    if track_id == -1:
+                        logger.debug(
+                            f"Gate {config.gate} ({self.gate_type}): Skipping invalid track_id -1"
+                        )
+                        continue
                     current_track_ids.add(track_id)
                     corners = [(x1, y1), (x2, y1), (x1, y2), (x2, y2)]
                     in_roi = any(
@@ -349,7 +379,7 @@ class Tracker:
                         logger.info(
                             f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} no longer detected - No action taken"
                         )
-                    del self.tracked_vehicles[track_id]
+                        del self.tracked_vehicles[track_id]
 
             # Render text on the frame
             if text_to_display:
