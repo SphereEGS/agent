@@ -1,21 +1,21 @@
 from __future__ import annotations
-
-import os
 from collections import Counter
 from typing import Any, Dict, Generator, List
-
 import cv2
+from cv2.typing import MatLike
 import numpy as np
-from ultralytics import YOLO  # type: ignore[import]
-
+from ultralytics import YOLO  # type: ignore
 from .backend_sync import BackendSync
 from .config import config
 from .gate_control import GateControl
 from .logging import logger
 from .lpr import LPR
 from numpy.typing import NDArray
+from PIL import Image, ImageDraw, ImageFont
+import os
 
 MAX_DISPLAY_HEIGHT = 720
+FONT_PATH = "resources/NotoSansArabic-Regular.ttf"
 
 
 class Tracker:
@@ -162,6 +162,47 @@ class Tracker:
         self.roi_points = scaled_points
         return scaled_points
 
+    def _render_arabic_text(
+        self, text: str, font_size: int, img_shape: tuple[int, int, int]
+    ) -> tuple[MatLike, Any]:
+        # Create a blank PIL image for text rendering
+        pil_img = Image.new(
+            "RGB", (img_shape[1], img_shape[0]), color=(0, 0, 0)
+        )
+        draw = ImageDraw.Draw(pil_img)
+
+        # Load the Arabic font
+        try:
+            font = ImageFont.truetype(FONT_PATH, font_size)
+        except Exception as e:
+            logger.error(
+                f"Gate {config.gate} ({self.gate_type}): Failed to load font {FONT_PATH}: {e}"
+            )
+            raise ValueError(f"Font {FONT_PATH} not found or invalid")
+
+        # Calculate text size and position
+        text_bbox = draw.textbbox((0, 0), text, font=font)
+        _, text_height = (
+            text_bbox[2] - text_bbox[0],
+            text_bbox[3] - text_bbox[1],
+        )
+
+        # Position text in bottom-left corner with padding
+        padding = 10
+        text_position = (padding, img_shape[0] - text_height - padding)
+
+        # Draw text (white color)
+        draw.text(text_position, text, font=font, fill=(255, 255, 255))
+
+        # Convert PIL image to OpenCV format
+        text_img = np.array(pil_img)
+        text_img = cv2.cvtColor(text_img, cv2.COLOR_RGB2BGR)
+
+        # Create a mask for non-black pixels
+        mask = np.any(text_img != [0, 0, 0], axis=2)
+
+        return text_img, mask
+
     def track_and_capture(
         self,
     ) -> Generator[tuple[Any, List[tuple[int, NDArray[Any]]]], None, None]:
@@ -185,6 +226,7 @@ class Tracker:
                 cv2.polylines(display_frame, [roi_poly], True, (0, 255, 0), 2)
 
             current_track_ids = set()
+            text_to_display = []
             if result.boxes and roi_poly is not None:
                 for box in result.boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -227,6 +269,9 @@ class Tracker:
                                 logger.info(
                                     f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} - Plate reading: {license_text}"
                                 )
+                                text_to_display.append(
+                                    f"Vehicle {track_id}: {license_text}"
+                                )
 
                                 if self.backend_sync.is_authorized(
                                     license_text
@@ -245,41 +290,24 @@ class Tracker:
                                         original_frame,
                                         track_id,
                                     )
-                                elif vehicle["attempts"] >= self.max_attempts:
-                                    self._handle_unauthorized(
-                                        track_id, original_frame
-                                    )
                             elif vehicle["attempts"] >= self.max_attempts:
-                                logger.info(
-                                    f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} - No plate detected after {self.max_attempts} attempts"
+                                self._handle_unauthorized(
+                                    track_id, original_frame
                                 )
-                                vehicle["status"] = "no_plate"
-                                vehicle["plate"] = "No plate found"
-                                self.backend_sync.log_to_backend(
-                                    self.gate_type,
-                                    "No plate found",
-                                    False,
-                                    original_frame,
-                                    track_id,
+                            else:
+                                text_to_display.append(
+                                    f"Vehicle {track_id}: Detecting..."
                                 )
 
-                        elif vehicle["status"] in [
-                            "authorized",
-                            "unauthorized",
-                            "no_plate",
-                        ]:
+                        if vehicle["status"] in ["authorized", "unauthorized"]:
                             status = (
-                                "authorized"
+                                "Authorized"
                                 if vehicle["authorized"]
-                                else "unauthorized"
+                                else "Unauthorized"
                             )
-                            logger.info(
-                                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} has been logged and is {status}"
+                            text_to_display.append(
+                                f"Vehicle {track_id}: {vehicle['plate']} - {status}"
                             )
-                            if vehicle["authorized"]:
-                                logger.info(
-                                    f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} still in ROI - Gate remains open"
-                                )
 
                     elif track_id in self.tracked_vehicles:
                         vehicle = self.tracked_vehicles[track_id]
@@ -308,6 +336,19 @@ class Tracker:
                         )
                     del self.tracked_vehicles[track_id]
 
+            # Render text on the frame
+            if text_to_display:
+                font_size = 24  # Suitable for resized frame
+                text_y_offset = display_frame.shape[0] - 10  # Bottom padding
+                for text in reversed(text_to_display):  # Bottom to top
+                    text_img, mask = self._render_arabic_text(
+                        text, font_size, display_frame.shape
+                    )
+                    text_y_offset -= (
+                        text_img.shape[0] // len(text_to_display)
+                    ) + 5  # Space between lines
+                    display_frame[mask] = text_img[mask]
+
             yield display_frame, []
 
     def _handle_unauthorized(self, track_id: int, frame: NDArray[Any]) -> None:
@@ -316,11 +357,11 @@ class Tracker:
         if readings:
             most_common = Counter(readings).most_common(1)[0]
             plate, count = most_common
-            total_attempts = len(readings)
-            probability = count / total_attempts
+            total_valid_readings = len(readings)
+            probability = count / total_valid_readings
             logger.info(
                 f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} unauthorized after {self.max_attempts} attempts - Final plate: {plate} "
-                f"(Readings: {count}/{total_attempts}, Probability: {probability:.2f})"
+                f"(Valid readings: {count}/{total_valid_readings}, Probability: {probability:.2f})"
             )
             vehicle["status"] = "unauthorized"
             vehicle["authorized"] = False
@@ -330,7 +371,7 @@ class Tracker:
             )
         else:
             logger.info(
-                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} unauthorized after {self.max_attempts} attempts - No plate readings detected"
+                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} unauthorized after {self.max_attempts} attempts - No valid plate readings detected"
             )
             vehicle["status"] = "no_plate"
             vehicle["plate"] = "No plate found"

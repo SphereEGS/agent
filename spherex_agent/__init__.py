@@ -38,6 +38,7 @@ def main() -> None:
         "lpr_model": config.lpr_model,
         "backend_url": config.backend_url,
         "gate": config.gate,
+        "gpu": config.gpu,
         "entry": config.entry,
         "exit": config.exit,
     }
