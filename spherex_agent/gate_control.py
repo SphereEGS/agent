@@ -1,8 +1,10 @@
 from __future__ import annotations
-import threading
+
 import os
-from .logging import logger
+import threading
+
 from .config import config
+from .logging import logger
 from .spherex_suprema_ext import Gate as EmbeddedGate
 
 

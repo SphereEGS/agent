@@ -1,15 +1,14 @@
-from typing import Any
-import cv2
 import argparse
-from .tracking import Tracker
+import json
+import queue
+import threading
+from typing import Any, Dict
+
+import cv2
+
 from .config import config
 from .logging import logger
-import logging
-import threading
-import queue
-import json
-
-logging.getLogger("ultralytics").setLevel(logging.ERROR)
+from .tracking import Tracker, MAX_DISPLAY_HEIGHT
 
 
 def run_tracker(
@@ -34,8 +33,8 @@ def main() -> None:
     args = parser.parse_args()
 
     frame_queue: queue.Queue[Any] = queue.Queue()
-    trackers: list[tuple[Tracker, str]] = []
-    updated_config: dict[str, Any] = {
+    trackers = []
+    updated_config: Dict[str, Any] = {
         "lpr_model": config.lpr_model,
         "backend_url": config.backend_url,
         "gate": config.gate,
@@ -74,7 +73,7 @@ def main() -> None:
     with open("config.json", "w") as f:
         json.dump(updated_config, f, indent=4)
 
-    threads: list[threading.Thread] = []
+    threads = []
     for tracker, gate_type in trackers:
         thread = threading.Thread(
             target=run_tracker,
@@ -92,9 +91,19 @@ def main() -> None:
                     f"Gate {config.gate} ({gate_type}): Tracker stopped unexpectedly"
                 )
                 break
-            cv2.imshow(
-                f"Vehicle Tracking {config.gate} ({gate_type})", display_frame
+
+            # Resize frame to fit within MAX_DISPLAY_HEIGHT while preserving aspect ratio
+            orig_height, orig_width = display_frame.shape[:2]
+            scale_factor = min(MAX_DISPLAY_HEIGHT / orig_height, 1.0)
+            display_height = int(orig_height * scale_factor)
+            display_width = int(orig_width * scale_factor)
+            resized_frame = cv2.resize(
+                display_frame,
+                (display_width, display_height),
+                interpolation=cv2.INTER_AREA,
             )
+
+            cv2.imshow(f"Vehicle Tracking ({gate_type})", resized_frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
         except queue.Empty:

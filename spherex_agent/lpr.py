@@ -1,11 +1,14 @@
 from __future__ import annotations
+
+import os
+from typing import Any, List, Optional
+
 import cv2
+from numpy.typing import NDArray
 from ultralytics import YOLO
-from typing import Optional, List, Any
+
 from .config import config
 from .logging import logger
-from numpy.typing import NDArray
-import os
 
 ARABIC_MAPPING = {
     "0": "٠",
@@ -54,6 +57,7 @@ PLATE_DETECTION_SIZE = 480
 QUANTIZED_PATH = "resources/lpr_nano_openvino_model"
 TENSORRT_PATH = "resources/lpr_nano.engine"
 
+
 class LPR:
     def __init__(self) -> None:
         model_path = "resources/" + config.lpr_model
@@ -68,7 +72,9 @@ class LPR:
                 self.model = YOLO(TENSORRT_PATH, task="detect")
                 logger.info("TensorRT LPR model exported and loaded successfully")
             except Exception as e:
-                logger.warning(f"Failed to export to TensorRT: {e}. Falling back to PyTorch model.")
+                logger.warning(
+                    f"Failed to export to TensorRT: {e}. Falling back to PyTorch model."
+                )
                 self.model = YOLO(model_path, task="detect")
                 if os.path.exists(os.path.join(QUANTIZED_PATH, "lpr_nano.bin")):
                     logger.info("Loading OpenVINO LPR model as fallback...")
@@ -142,14 +148,10 @@ class LPR:
         boxes_and_classes = sorted(
             [
                 (float(box[0]), lpr_class_names[int(cls)])
-                for box, cls in zip(
-                    results[0].boxes.xyxy, results[0].boxes.cls
-                )
+                for box, cls in zip(results[0].boxes.xyxy, results[0].boxes.cls)
             ],
             key=lambda x: x[0],
         )
-        unmapped_chars = [
-            cls for _, cls in boxes_and_classes if cls in ARABIC_MAPPING
-        ]
+        unmapped_chars = [cls for _, cls in boxes_and_classes if cls in ARABIC_MAPPING]
         mapped_chars = [ARABIC_MAPPING.get(c, c) for c in unmapped_chars]
         return "".join(mapped_chars)

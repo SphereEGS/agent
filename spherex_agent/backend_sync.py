@@ -1,13 +1,15 @@
-from typing import Any, Dict, NoReturn
-import requests
+import os
 import threading
 import time
+from typing import Any, Dict, NoReturn
+
 import cv2
-import os
+import requests
+import urllib3
+from numpy.typing import NDArray
+
 from .config import config
 from .logging import logger
-from numpy.typing import NDArray
-import urllib3
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -16,9 +18,7 @@ class BackendSync:
     def __init__(self) -> None:
         self.allowed_plates: set[str] = set()
         self.lock = threading.Lock()
-        self.fetch_thread = threading.Thread(
-            target=self._fetch_loop, daemon=True
-        )
+        self.fetch_thread = threading.Thread(target=self._fetch_loop, daemon=True)
         self.fetch_thread.start()
 
     def _fetch_loop(self) -> NoReturn:
@@ -60,7 +60,9 @@ class BackendSync:
     ) -> None:
         temp_file = ""
         try:
-            temp_file = f"gate_{config.gate}_{gate_type}_{track_id}_{int(time.time())}.jpg"
+            temp_file = (
+                f"gate_{config.gate}_{gate_type}_{track_id}_{int(time.time())}.jpg"
+            )
             cv2.imwrite(temp_file, frame)
             log_data: Dict[str, str | int] = {
                 "gate": config.gate,
@@ -78,9 +80,7 @@ class BackendSync:
                     timeout=5,
                 )
                 upload_response.raise_for_status()
-                log_data["image"] = upload_response.json()["message"][
-                    "file_url"
-                ]
+                log_data["image"] = upload_response.json()["message"]["file_url"]
             response = requests.post(
                 f"{config.backend_url}/api/resource/Gate Entry Log",
                 json=log_data,

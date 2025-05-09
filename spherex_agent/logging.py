@@ -1,6 +1,6 @@
 from __future__ import annotations
-import logging
 
+import logging
 
 COLORS = {
     "INFO": "\033[32m",  # Green
@@ -30,6 +30,7 @@ class ColorFormatter(logging.Formatter):
 def setup_logger() -> logging.Logger:
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
+    logging.getLogger("ultralytics").setLevel(logging.ERROR)
 
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter("%(levelname)s: %(message)s"))
