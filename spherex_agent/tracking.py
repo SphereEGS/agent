@@ -16,6 +16,8 @@ import os
 import arabic_reshaper
 from bidi.algorithm import get_display
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue
 
 MAX_DISPLAY_HEIGHT = 720
 FONT_PATH = "resources/NotoSansArabic-Regular.ttf"
@@ -42,6 +44,14 @@ class Tracker:
         self.gate_control = gate_control
         self.tracked_vehicles: Dict[int, Dict[str, Any]] = {}
         self.max_attempts = 20
+
+        # Thread pool for non-blocking LPR
+        self.executor = ThreadPoolExecutor(
+            max_workers=4
+        )  # Adjust based on CPU cores
+        self.lpr_results: Dict[int, Queue] = (
+            {}
+        )  # Store LPR results per track_id
 
         if config.gpu and os.path.exists(tensorrt_path):
             logger.info(
@@ -262,6 +272,9 @@ class Tracker:
 
             current_track_ids = set()
             text_to_display = []
+            lpr_tasks = []  # List of (track_id, future) for LPR tasks
+
+            # Step 1: Process detections and submit LPR tasks
             if result.boxes and roi_poly is not None:
                 for box in result.boxes:
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -291,56 +304,29 @@ class Tracker:
 
                         vehicle = self.tracked_vehicles[track_id]
                         if vehicle["status"] == "pending":
-                            car_crop = original_frame[y1:y2, x1:x2]
+                            if track_id not in self.lpr_results:
+                                self.lpr_results[track_id] = Queue()
+
                             vehicle["attempts"] += 1
                             logger.info(
                                 f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} - Recognition attempt {vehicle['attempts']}/{self.max_attempts}"
                             )
-                            license_text = (
-                                self.lpr.recognize_plate(car_crop)
-                                if car_crop.size > 0
-                                else None
-                            )
 
-                            if license_text:
-                                vehicle["readings"].append(license_text)
-                                logger.info(
-                                    f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} - Plate reading: {license_text}"
-                                )
-                                text_to_display.append(
-                                    f"Vehicle {track_id}: {license_text}"
-                                )
-
-                                if self.backend_sync.is_authorized(
-                                    license_text
-                                ):
-                                    vehicle["status"] = "authorized"
-                                    vehicle["authorized"] = True
-                                    vehicle["plate"] = license_text
-                                    logger.info(
-                                        f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} authorized with plate {license_text} - Opening gate"
+                            # Submit LPR task to thread pool
+                            if vehicle["attempts"] <= self.max_attempts:
+                                car_crop = original_frame[y1:y2, x1:x2]
+                                if car_crop.size > 0:
+                                    future = self.executor.submit(
+                                        self.lpr.recognize_plate, car_crop
                                     )
-                                    self.gate_control.open(self.gate_type)
-                                    if vehicle["first_frame"] is not None:
-                                        self.backend_sync.log_to_backend(
-                                            self.gate_type,
-                                            license_text,
-                                            True,
-                                            vehicle["first_frame"],
-                                            track_id,
-                                        )
-                                    else:
-                                        logger.warning(
-                                            f"Gate {config.gate} ({self.gate_type}): No first frame available for authorized vehicle {track_id}"
-                                        )
-                            elif vehicle["attempts"] >= self.max_attempts:
+                                    lpr_tasks.append((track_id, future))
+                                else:
+                                    self.lpr_results[track_id].put(None)
+                            else:
                                 self._handle_unauthorized(
                                     track_id, vehicle["first_frame"]
                                 )
-                            else:
-                                text_to_display.append(
-                                    f"Vehicle {track_id}: Detecting..."
-                                )
+                                continue
 
                         if vehicle["status"] in ["authorized", "unauthorized"]:
                             status = (
@@ -358,13 +344,10 @@ class Tracker:
                             vehicle["status"] == "pending"
                             and vehicle["readings"]
                         ):
-                            # Vehicle left ROI early; decide based on readings
                             self._handle_unauthorized(
                                 track_id, vehicle["first_frame"]
                             )
-                            vehicle = self.tracked_vehicles[
-                                track_id
-                            ]  # Refresh vehicle data
+                            vehicle = self.tracked_vehicles[track_id]
                         if vehicle["authorized"]:
                             logger.info(
                                 f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} left ROI - Closing gate"
@@ -375,18 +358,64 @@ class Tracker:
                                 f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} left ROI - No action taken"
                             )
                         del self.tracked_vehicles[track_id]
+                        if track_id in self.lpr_results:
+                            del self.lpr_results[track_id]
 
+            # Step 2: Collect completed LPR results from previous frames
+            for track_id in list(self.lpr_results.keys()):
+                if track_id not in self.tracked_vehicles:
+                    continue
+                vehicle = self.tracked_vehicles[track_id]
+                if vehicle["status"] != "pending":
+                    continue
+                queue = self.lpr_results[track_id]
+                while not queue.empty():
+                    license_text = queue.get()
+                    if license_text:
+                        vehicle["readings"].append(license_text)
+                        text_to_display.append(
+                            f"Vehicle {track_id}: {license_text}"
+                        )
+                        if self.backend_sync.is_authorized(license_text):
+                            vehicle["status"] = "authorized"
+                            vehicle["authorized"] = True
+                            vehicle["plate"] = license_text
+                            logger.info(
+                                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} authorized with plate {license_text} - Opening gate"
+                            )
+                            self.gate_control.open(self.gate_type)
+                            if vehicle["first_frame"] is not None:
+                                self.backend_sync.log_to_backend(
+                                    self.gate_type,
+                                    license_text,
+                                    True,
+                                    vehicle["first_frame"],
+                                    track_id,
+                                )
+                            else:
+                                logger.warning(
+                                    f"Gate {config.gate} ({self.gate_type}): No first frame available for authorized vehicle {track_id}"
+                                )
+                    else:
+                        text_to_display.append(
+                            f"Vehicle {track_id}: Detecting..."
+                        )
+
+            # Step 3: Collect results from current frame's LPR tasks
+            for track_id, future in lpr_tasks:
+                if future.done():
+                    license_text = future.result()
+                    self.lpr_results[track_id].put(license_text)
+
+            # Step 4: Clean up vehicles no longer detected
             for track_id in list(self.tracked_vehicles.keys()):
                 if track_id not in current_track_ids:
                     vehicle = self.tracked_vehicles[track_id]
                     if vehicle["status"] == "pending" and vehicle["readings"]:
-                        # Vehicle no longer detected; decide based on readings
                         self._handle_unauthorized(
                             track_id, vehicle["first_frame"]
                         )
-                        vehicle = self.tracked_vehicles[
-                            track_id
-                        ]  # Refresh vehicle data
+                        vehicle = self.tracked_vehicles[track_id]
                     if vehicle["authorized"]:
                         logger.info(
                             f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} no longer detected - Closing gate"
@@ -397,18 +426,20 @@ class Tracker:
                             f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} with plate {vehicle['plate']} no longer detected - No action taken"
                         )
                     del self.tracked_vehicles[track_id]
+                    if track_id in self.lpr_results:
+                        del self.lpr_results[track_id]
 
             # Render text on the frame
             if text_to_display:
-                font_size = 24  # Suitable for resized frame
-                text_y_offset = display_frame.shape[0] - 10  # Bottom padding
-                for text in reversed(text_to_display):  # Bottom to top
+                font_size = 24
+                text_y_offset = display_frame.shape[0] - 10
+                for text in reversed(text_to_display):
                     text_img, mask = self._render_arabic_text(
                         text, font_size, display_frame.shape
                     )
                     text_y_offset -= (
                         text_img.shape[0] // len(text_to_display)
-                    ) + 5  # Space between lines
+                    ) + 5
                     display_frame[mask] = text_img[mask]
 
             yield display_frame, []
@@ -444,11 +475,4 @@ class Tracker:
             )
             vehicle["status"] = "no_plate"
             vehicle["plate"] = "No plate found"
-            if frame is not None:
-                self.backend_sync.log_to_backend(
-                    self.gate_type, "No plate found", False, frame, track_id
-                )
-            else:
-                logger.warning(
-                    f"Gate {config.gate} ({self.gate_type}): No first frame available for vehicle {track_id} with no plate"
-                )
+            # Do not log to backend if no plate is detected
