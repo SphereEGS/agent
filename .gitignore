@@ -1,12 +1,8 @@
 .venv
 venv
 *.env
-models
-frames
-debug_frames
-controller
 *.log
 __pycache__
 *.pyc
-*.pid
 *.json
+reources
