@@ -45,7 +45,7 @@ class Tracker:
         self.backend_sync = backend_sync
         self.gate_control = gate_control
         self.tracked_vehicles: Dict[int, Dict[str, Any]] = {}
-        self.max_attempts = 20
+        self.max_attempts = 30
         self.recognition_queue = Queue(maxsize=RECOGNITION_QUEUE_MAX_SIZE)
         self.executor = ThreadPoolExecutor(max_workers=MAX_RECOGNITION_WORKERS)
 
