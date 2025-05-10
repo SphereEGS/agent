@@ -329,7 +329,7 @@ class Tracker:
                             vehicle["status"] == "pending"
                             and vehicle["attempts"] >= self.max_attempts
                         ):
-                            self._handle_unauthorized(
+                            self._handle_final_decision(
                                 track_id, vehicle["first_frame"]
                             )
 
@@ -349,7 +349,7 @@ class Tracker:
                             vehicle["status"] == "pending"
                             and vehicle["readings"]
                         ):
-                            self._handle_unauthorized(
+                            self._handle_final_decision(
                                 track_id, vehicle["first_frame"]
                             )
                         if vehicle["authorized"]:
@@ -375,7 +375,7 @@ class Tracker:
                                 license_text
                             )
                             logger.info(
-                                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} - Authorization check for plate {license_text}: {'Authorized' if is_authorized else 'Not Authorized'}"
+                                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} - Plate {license_text} - Authorization result: {'Authorized' if is_authorized else 'Not Authorized'}"
                             )
                             if is_authorized:
                                 vehicle["status"] = "authorized"
@@ -394,12 +394,12 @@ class Tracker:
                                         track_id,
                                     )
 
-                        # If max_attempts reached and not authorized, handle as unauthorized
+                        # If max_attempts reached and not authorized, make final decision
                         if (
                             vehicle["status"] == "pending"
                             and vehicle["attempts"] >= self.max_attempts
                         ):
-                            self._handle_unauthorized(
+                            self._handle_final_decision(
                                 track_id, vehicle["first_frame"]
                             )
 
@@ -410,7 +410,7 @@ class Tracker:
                 if track_id not in current_track_ids:
                     vehicle = self.tracked_vehicles[track_id]
                     if vehicle["status"] == "pending" and vehicle["readings"]:
-                        self._handle_unauthorized(
+                        self._handle_final_decision(
                             track_id, vehicle["first_frame"]
                         )
                     if vehicle["authorized"]:
@@ -434,32 +434,39 @@ class Tracker:
 
             yield display_frame, []
 
-    def _handle_unauthorized(
+    def _handle_final_decision(
         self, track_id: int, frame: NDArray[Any] | None
     ) -> None:
         vehicle = self.tracked_vehicles[track_id]
         readings = vehicle["readings"]
-        if readings and any(reading is not None for reading in readings):
-            most_common = Counter(
-                [r for r in readings if r is not None]
-            ).most_common(1)[0]
-            plate, count = most_common
-            total_valid_readings = len([r for r in readings if r is not None])
+
+        # Filter valid (non-None) readings
+        valid_readings = [r for r in readings if r is not None]
+
+        if valid_readings:
+            # Determine the most common reading
+            most_common = Counter(valid_readings).most_common(1)[0]
+            final_plate, count = most_common
+            total_valid_readings = len(valid_readings)
             probability = count / total_valid_readings
-            logger.info(
-                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} unauthorized after {vehicle['attempts']} attempts - Final plate: {plate} "
-                f"(Valid readings: {count}/{total_valid_readings}, Probability: {probability:.2f})"
-            )
+
+            # Since we're in _handle_final_decision, the vehicle wasn't authorized earlier
             vehicle["status"] = "unauthorized"
             vehicle["authorized"] = False
-            vehicle["plate"] = plate
+            vehicle["plate"] = final_plate
+            logger.info(
+                f"Gate {config.gate} ({self.gate_type}): Final decision for Vehicle {track_id} after {vehicle['attempts']} attempts - "
+                f"Plate: {final_plate} (Valid readings: {count}/{total_valid_readings}, Probability: {probability:.2f}) - Unauthorized"
+            )
             if frame is not None:
                 self.backend_sync.log_to_backend(
-                    self.gate_type, plate, False, frame, track_id
+                    self.gate_type, final_plate, False, frame, track_id
                 )
         else:
-            logger.info(
-                f"Gate {config.gate} ({self.gate_type}): Vehicle {track_id} unauthorized after {vehicle['attempts']} attempts - No valid plate readings detected"
-            )
+            # No valid readings, do not log to backend
             vehicle["status"] = "no_plate"
             vehicle["plate"] = "No plate found"
+            logger.info(
+                f"Gate {config.gate} ({self.gate_type}): Final decision for Vehicle {track_id} after {vehicle['attempts']} attempts - "
+                f"No valid plate readings detected - Not logging to backend"
+            )
