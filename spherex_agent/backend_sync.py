@@ -67,7 +67,6 @@ class BackendSync:
                 "license_plate": plate,
                 "authorized": 1 if authorized else 0,
                 "access_type": gate_type,
-                "camera": f"{config.gate}_{gate_type.lower()}_camera",
             }
             with open(temp_file, "rb") as image_file:
                 files = {"file": image_file}
