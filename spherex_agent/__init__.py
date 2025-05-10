@@ -4,10 +4,11 @@ import cv2
 from typing import Any, Dict, List, Tuple
 from .config import config
 from .logging import logger
-from .tracking import Tracker, MAX_DISPLAY_HEIGHT
+from .tracking import Tracker
 from .backend_sync import BackendSync
 from .gate_control import GateControl
 
+MAX_DISPLAY_HEIGHT = 240
 def main() -> None:
     parser = argparse.ArgumentParser(description="SphereX Agent")
     parser.add_argument(
